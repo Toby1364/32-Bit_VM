@@ -82,6 +82,8 @@ async fn main() {
 
     let program = fs::read("out.bin").unwrap();
 
+    //println!("{:0x?}", program);
+
     for i in 0..program.len() {
         RAM.lock().unwrap()[0x00_00FF + i] = program[i];
     }
@@ -102,10 +104,24 @@ async fn main() {
     ];
 
     while RAM.lock().unwrap()[0x00_0000] != 0x01 {
+        {
+            let mut tram = RAM.lock().unwrap();
+            tram[0x00_0002] = (screen_width() as u16 >> 8) as u8;
+            tram[0x00_0003] = screen_width() as u16 as u8;
+
+            tram[0x00_0004] = (screen_height() as u16 >> 8) as u8;
+            tram[0x00_0005] = screen_height() as u16 as u8;
+        }
         next_frame().await;
         clear_background(BLACK);
 
-        if RAM.lock().unwrap()[0x00_0001] == 0x00 {
+        /*let mut x: Vec<u8> = Vec::new();
+        for i in 0..55 {
+            x.push(RAM.lock().unwrap()[0x0F_0000+i])
+        }
+        println!("{:?}", x);*/
+
+        if RAM.lock().unwrap()[0x00_0001] == 0x00 { //Basic Terminal
             let mut bytes: [[u8; 70]; 0x16] = [[0x0; 70]; 0x16];
 
             let mut holder = 0x0;
@@ -113,13 +129,14 @@ async fn main() {
             'out: loop {
                 i = holder;
                 while i < holder+70 {
-                    bytes[holder/70][i-holder] = RAM.lock().unwrap()[0x7F_FA00 + i];
+                    let mut byte = RAM.lock().unwrap()[0x7F_FA00 + i];
+                    if byte > 0x7F {byte = b'?'}
+                    bytes[holder/70][i-holder] = byte;
                     i += 1;
                     if i == 0x05FF {break 'out;}
                 }
                 holder += 70;
             }
-
             
             let mut i = 0;
             while i < bytes.len() {
@@ -143,6 +160,35 @@ async fn main() {
                 i += 1;
             }
         }
+        else if RAM.lock().unwrap()[0x00_0001] == 0x01 { //Colored Graphics
+            let mut i = 0;
+            while i < 0x5FFF {
+                let tram = RAM.lock().unwrap();
+                if tram[0x7F_A000 + i + 11] == 0 {i += 12; continue}
+                let x = (((tram[0x7F_A000 + i + 0] as u16) << 8) | (tram[0x7F_A000 + i + 1] as u16)) as f32;
+                let y = (((tram[0x7F_A000 + i + 2] as u16) << 8) | (tram[0x7F_A000 + i + 3] as u16)) as f32;
+
+                let w = (((tram[0x7F_A000 + i + 4] as u16) << 8) | (tram[0x7F_A000 + i + 5] as u16)) as f32;
+                let h = (((tram[0x7F_A000 + i + 6] as u16) << 8) | (tram[0x7F_A000 + i + 7] as u16)) as f32;
+
+                draw_rectangle(
+                    x,
+                    y,
+                    w,
+                    h,
+                    Color::new(
+                        tram[0x7F_A000 + i + 8] as f32 / 255.,
+                        tram[0x7F_A000 + i + 9] as f32 / 255.,
+                        tram[0x7F_A000 + i + 10] as f32 / 255.,
+                        tram[0x7F_A000 + i + 11] as f32 / 255.,
+                    ),
+                );
+                i += 12;
+            }
+        }
+        else if RAM.lock().unwrap()[0x00_0001] == 0x02 { //Monochrome Graphics
+
+        }
     }
 }
 
@@ -162,7 +208,7 @@ fn core(ptr: usize, stck_ptr: usize) {
         match inst {
             0x00 => { // NOP
                 //println!("NOP");
-                thread::sleep(time::Duration::from_millis(1));
+                thread::sleep(time::Duration::from_millis(0));
             }
             0x01 => { // HLT
                 //println!("HLT");
@@ -276,7 +322,7 @@ fn core(ptr: usize, stck_ptr: usize) {
                     _ => {}
                 }
             }
-            0x05 => { //MOV 1b, reg-reg,
+            0x05 => { //MOV: 1b reg-reg,
                 //println!("MOV");
                 let first_reg = (RAM.lock().unwrap()[reg.ptr + reg.pc] << 4) >> 4;
                 let second_reg = RAM.lock().unwrap()[reg.ptr + reg.pc] >> 4;
@@ -300,6 +346,8 @@ fn core(ptr: usize, stck_ptr: usize) {
                     0xA => {n = reg.cr;}
                     0xB => {n = reg.dr;}
 
+                    0xC => {n = reg.pc as u32;}
+
                     _ => {}
                 }
 
@@ -318,6 +366,8 @@ fn core(ptr: usize, stck_ptr: usize) {
                     0x9 => {reg.br = n;}
                     0xA => {reg.cr = n;}
                     0xB => {reg.dr = n;}
+
+                    0xC => {reg.pc = n as usize;}
 
                     _ => {}
                 }
@@ -417,6 +467,7 @@ fn core(ptr: usize, stck_ptr: usize) {
                 //println!("JE");
                 let tram = RAM.lock().unwrap();
                 let addr = ((tram[reg.ptr + reg.pc] as usize) << 32) | ((tram[reg.ptr + reg.pc + 1] as usize) << 24) | ((tram[reg.ptr + reg.pc + 2] as usize) << 16) | ((tram[reg.ptr + reg.pc + 3] as usize) << 8) | ((tram[reg.ptr + reg.pc + 4] as usize));
+                reg.pc += 5;
                 if reg.cr == 0 {
                     reg.pc = addr;
                 }
@@ -425,6 +476,7 @@ fn core(ptr: usize, stck_ptr: usize) {
                 //println!("JNE");
                 let tram = RAM.lock().unwrap();
                 let addr = ((tram[reg.ptr + reg.pc] as usize) << 32) | ((tram[reg.ptr + reg.pc + 1] as usize) << 24) | ((tram[reg.ptr + reg.pc + 2] as usize) << 16) | ((tram[reg.ptr + reg.pc + 3] as usize) << 8) | ((tram[reg.ptr + reg.pc + 4] as usize));
+                reg.pc += 5;
                 if reg.cr != 0 {
                     reg.pc = addr;
                 }
@@ -433,6 +485,7 @@ fn core(ptr: usize, stck_ptr: usize) {
                 //println!("JL");
                 let tram = RAM.lock().unwrap();
                 let addr = ((tram[reg.ptr + reg.pc] as usize) << 32) | ((tram[reg.ptr + reg.pc + 1] as usize) << 24) | ((tram[reg.ptr + reg.pc + 2] as usize) << 16) | ((tram[reg.ptr + reg.pc + 3] as usize) << 8) | ((tram[reg.ptr + reg.pc + 4] as usize));
+                reg.pc += 5;
                 if reg.cr < reg.by {
                     reg.pc = addr;
                 }
@@ -441,6 +494,7 @@ fn core(ptr: usize, stck_ptr: usize) {
                 //println!("JLE");
                 let tram = RAM.lock().unwrap();
                 let addr = ((tram[reg.ptr + reg.pc] as usize) << 32) | ((tram[reg.ptr + reg.pc + 1] as usize) << 24) | ((tram[reg.ptr + reg.pc + 2] as usize) << 16) | ((tram[reg.ptr + reg.pc + 3] as usize) << 8) | ((tram[reg.ptr + reg.pc + 4] as usize));
+                reg.pc += 5;
                 if reg.cr <= reg.by {
                     reg.pc = addr;
                 }
@@ -449,6 +503,7 @@ fn core(ptr: usize, stck_ptr: usize) {
                 //println!("JG");
                 let tram = RAM.lock().unwrap();
                 let addr = ((tram[reg.ptr + reg.pc] as usize) << 32) | ((tram[reg.ptr + reg.pc + 1] as usize) << 24) | ((tram[reg.ptr + reg.pc + 2] as usize) << 16) | ((tram[reg.ptr + reg.pc + 3] as usize) << 8) | ((tram[reg.ptr + reg.pc + 4] as usize));
+                reg.pc += 5;
                 if reg.cr > reg.by {
                     reg.pc = addr;
                 }
@@ -457,6 +512,7 @@ fn core(ptr: usize, stck_ptr: usize) {
                 //println!("JGE");
                 let tram = RAM.lock().unwrap();
                 let addr = ((tram[reg.ptr + reg.pc] as usize) << 32) | ((tram[reg.ptr + reg.pc + 1] as usize) << 24) | ((tram[reg.ptr + reg.pc + 2] as usize) << 16) | ((tram[reg.ptr + reg.pc + 3] as usize) << 8) | ((tram[reg.ptr + reg.pc + 4] as usize));
+                reg.pc += 5;
                 if reg.cr >= reg.by {
                     reg.pc = addr;
                 }
@@ -465,6 +521,7 @@ fn core(ptr: usize, stck_ptr: usize) {
                 //println!("CMP");
                 let tram = RAM.lock().unwrap();
                 let addr = ((tram[reg.ptr + reg.pc] as usize) << 32) | ((tram[reg.ptr + reg.pc + 1] as usize) << 24) | ((tram[reg.ptr + reg.pc + 2] as usize) << 16) | ((tram[reg.ptr + reg.pc + 3] as usize) << 8) | ((tram[reg.ptr + reg.pc + 4] as usize));
+                reg.pc += 5;
                 if reg.cr == reg.by {
                     reg.pc = addr;
                 }
@@ -530,7 +587,7 @@ fn core(ptr: usize, stck_ptr: usize) {
                     _ => {}
                 }
             }
-            0x16 => { // SHL: 1b reg
+            0x16 => { // SHL: 1b reg, 1b n
                 //println!("SHL");
                 let register_index = RAM.lock().unwrap()[reg.ptr + reg.pc];
                 reg.pc += 1;
@@ -551,7 +608,7 @@ fn core(ptr: usize, stck_ptr: usize) {
                     _ => {}
                 }
             }
-            0x17 => { // SHR: 1b reg
+            0x17 => { // SHR: 1b reg, 1b n
                 //println!("SHR");
                 let register_index = RAM.lock().unwrap()[reg.ptr + reg.pc];
                 reg.pc += 1;
@@ -572,8 +629,8 @@ fn core(ptr: usize, stck_ptr: usize) {
                     _ => {}
                 }
             }
-            0x18 => { // PUSH: 1b reg
-                //println!("PUSH");
+            0x18 => { // PSH: 1b reg
+                //println!("PSH");
                 let register_index = RAM.lock().unwrap()[reg.ptr + reg.pc];
                 reg.pc += 1;
 
@@ -632,6 +689,8 @@ fn core(ptr: usize, stck_ptr: usize) {
                     0x0A => {reg.cr = value;}
                     0x0B => {reg.dr = value;}
 
+                    0x0C => {reg.pc = value as usize;}
+
                     _ => {}
                 }
             }
@@ -661,7 +720,7 @@ fn core(ptr: usize, stck_ptr: usize) {
                     _ => {}
                 }
             }
-            0x1B => { // LOR: 1b addr, 1b reg, 1b reg
+            0x1B => { // LOR: 1b reg, 1b addr, 1b reg
                 //println!("LOR");
                 let register_index = RAM.lock().unwrap()[reg.ptr + reg.pc];
                 reg.pc += 1;
@@ -688,7 +747,7 @@ fn core(ptr: usize, stck_ptr: usize) {
                 }
 
                 let tram = RAM.lock().unwrap();
-                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 32) | (value as u64)) as usize;
+                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 16) | (value as u64)) as usize;
                 reg.pc += 1;
                 let register_index = tram[reg.ptr + reg.pc];
                 reg.pc += 1;
@@ -715,7 +774,7 @@ fn core(ptr: usize, stck_ptr: usize) {
                     _ => {}
                 }
             }
-            0x1C => { // STR: 1b addr, 1b reg, 1b reg
+            0x1C => { // STR: 1b reg, 1b addr, 1b reg
                 //println!("STR");
                 let register_index = RAM.lock().unwrap()[reg.ptr + reg.pc];
                 reg.pc += 1;
@@ -742,7 +801,7 @@ fn core(ptr: usize, stck_ptr: usize) {
                 }
 
                 let mut tram = RAM.lock().unwrap();
-                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 32) | (value as u64)) as usize;
+                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 16) | (value as u64)) as usize;
                 reg.pc += 1;
                 let register_index = tram[reg.ptr + reg.pc];
                 reg.pc += 1;
@@ -780,7 +839,231 @@ fn core(ptr: usize, stck_ptr: usize) {
                     tram[addr + 1] = num16 as u8;
                 }
             }
+            0x1D => { // UBS: 5b addr, 1b reg
+                let mut tram = RAM.lock().unwrap();
+                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 32) |
+                                ((tram[reg.ptr + reg.pc + 1] as u64) << 24) |
+                                ((tram[reg.ptr + reg.pc + 2] as u64) << 16) |
+                                ((tram[reg.ptr + reg.pc + 3] as u64) << 8) |
+                                ((tram[reg.ptr + reg.pc + 4] as u64))) as usize;
+                reg.pc += 5;
+                let register_index = tram[reg.ptr + reg.pc];
+                reg.pc += 1;
 
+                let mut num: u8 = 0;
+
+                match register_index {
+                    0x00 => {num = reg.ax as u8;}
+                    0x01 => {num = reg.bx as u8;}
+                    0x02 => {num = reg.cx as u8;}
+                    0x03 => {num = reg.dx as u8;}
+
+                    0x04 => {num = reg.ay as u8;}
+                    0x05 => {num = reg.by as u8;}
+                    0x06 => {num = reg.cy as u8;}
+                    0x07 => {num = reg.dy as u8;}
+
+                    0x08 => {num = reg.ar as u8;}
+                    0x09 => {num = reg.br as u8;}
+                    0x0A => {num = reg.cr as u8;}
+                    0x0B => {num = reg.dr as u8;}
+                    _ => {}
+                }
+                tram[addr] = num;
+            }
+            0x1E => { // SBR: 1b reg, 1b addr, 1b reg
+                //println!("SBR");
+                let register_index = RAM.lock().unwrap()[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let mut value = 0;
+
+                match register_index {
+                    0x00 => {value = reg.ax;}
+                    0x01 => {value = reg.bx;}
+                    0x02 => {value = reg.cx as u32;}
+                    0x03 => {value = reg.dx as u32;}
+
+                    0x04 => {value = reg.ay;}
+                    0x05 => {value = reg.by;}
+                    0x06 => {value = reg.cy as u32;}
+                    0x07 => {value = reg.dy as u32;}
+
+                    0x08 => {value = reg.ar;}
+                    0x09 => {value = reg.br;}
+                    0x0A => {value = reg.cr;}
+                    0x0B => {value = reg.dr;}
+
+                    _ => {}
+                }
+
+                let mut tram = RAM.lock().unwrap();
+                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 16) | (value as u64)) as usize;
+                reg.pc += 1;
+                let register_index = tram[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let mut num: u8 = 0;
+
+                match register_index {
+                    0x00 => {num = reg.ax as u8;}
+                    0x01 => {num = reg.bx as u8;}
+                    0x02 => {num = reg.cx as u8;}
+                    0x03 => {num = reg.dx as u8;}
+
+                    0x04 => {num = reg.ay as u8;}
+                    0x05 => {num = reg.by as u8;}
+                    0x06 => {num = reg.cy as u8;}
+                    0x07 => {num = reg.dy as u8;}
+
+                    0x08 => {num = reg.ar as u8;}
+                    0x09 => {num = reg.br as u8;}
+                    0x0A => {num = reg.cr as u8;}
+                    0x0B => {num = reg.dr as u8;}
+                    _ => {}
+                }
+                tram[addr] = num;
+            }
+            0x1F => { // INC: 1b reg
+                //println!("INC");
+                let register_index = RAM.lock().unwrap()[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+
+                match register_index {
+                    0x00 => {reg.ax += 1;}
+                    0x01 => {reg.bx += 1;}
+                    0x02 => {reg.cx += 1;}
+                    0x03 => {reg.dx += 1;}
+
+                    0x04 => {reg.ay += 1;}
+                    0x05 => {reg.by += 1;}
+                    0x06 => {reg.cy += 1;}
+                    0x07 => {reg.dy += 1;}
+
+                    0x08 => {reg.ar += 1;}
+                    0x09 => {reg.br += 1;}
+                    0x0A => {reg.cr += 1;}
+                    0x0B => {reg.dr += 1;}
+
+                    _ => {}
+                }
+            }
+            0x20 => { // DEC: 1b reg
+                //println!("DEC");
+                let register_index = RAM.lock().unwrap()[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+
+                match register_index {
+                    0x00 => {reg.ax -= 1;}
+                    0x01 => {reg.bx -= 1;}
+                    0x02 => {reg.cx -= 1;}
+                    0x03 => {reg.dx -= 1;}
+
+                    0x04 => {reg.ay -= 1;}
+                    0x05 => {reg.by -= 1;}
+                    0x06 => {reg.cy -= 1;}
+                    0x07 => {reg.dy -= 1;}
+
+                    0x08 => {reg.ar -= 1;}
+                    0x09 => {reg.br -= 1;}
+                    0x0A => {reg.cr -= 1;}
+                    0x0B => {reg.dr -= 1;}
+
+                    _ => {}
+                }
+            }
+            0x21 => { // WIT
+                //println!("WIT");
+                thread::sleep(time::Duration::from_millis(1));
+            }
+            0x22 => { // UBL: 5b addr, 1b reg
+                //println!("UBL");
+                let tram = RAM.lock().unwrap();
+                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 32) | 
+                                ((tram[reg.ptr + reg.pc + 1] as u64) << 24) | 
+                                ((tram[reg.ptr + reg.pc + 2] as u64) << 16) | 
+                                ((tram[reg.ptr + reg.pc + 3] as u64) << 8) | 
+                                ((tram[reg.ptr + reg.pc + 4] as u64))) as usize;
+                reg.pc += 5;
+                let register_index = tram[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let number = tram[addr] as u32;
+
+                match register_index {
+                    0x00 => {reg.ax = number;}
+                    0x01 => {reg.bx = number;}
+                    0x02 => {reg.cx = number as u16;}
+                    0x03 => {reg.dx = number as u16;}
+
+                    0x04 => {reg.ay = number;}
+                    0x05 => {reg.by = number;}
+                    0x06 => {reg.cy = number as u16;}
+                    0x07 => {reg.dy = number as u16;}
+
+                    0x08 => {reg.ar = number;}
+                    0x09 => {reg.br = number;}
+                    0x0A => {reg.cr = number;}
+                    0x0B => {reg.dr = number;}
+
+                    _ => {}
+                }
+            }
+            0x23 => { // LBR: 1b reg, 1b addr, 1b reg
+                //println!("LBR");
+                let register_index = RAM.lock().unwrap()[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let mut value = 0;
+
+                match register_index {
+                    0x00 => {value = reg.ax;}
+                    0x01 => {value = reg.bx;}
+                    0x02 => {value = reg.cx as u32;}
+                    0x03 => {value = reg.dx as u32;}
+
+                    0x04 => {value = reg.ay;}
+                    0x05 => {value = reg.by;}
+                    0x06 => {value = reg.cy as u32;}
+                    0x07 => {value = reg.dy as u32;}
+
+                    0x08 => {value = reg.ar;}
+                    0x09 => {value = reg.br;}
+                    0x0A => {value = reg.cr;}
+                    0x0B => {value = reg.dr;}
+
+                    _ => {}
+                }
+
+                let tram = RAM.lock().unwrap();
+                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 16) | (value as u64)) as usize;
+                reg.pc += 1;
+                let register_index = tram[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let number = tram[addr] as u32;
+
+                match register_index {
+                    0x00 => {reg.ax = number;}
+                    0x01 => {reg.bx = number;}
+                    0x02 => {reg.cx = number as u16;}
+                    0x03 => {reg.dx = number as u16;}
+
+                    0x04 => {reg.ay = number;}
+                    0x05 => {reg.by = number;}
+                    0x06 => {reg.cy = number as u16;}
+                    0x07 => {reg.dy = number as u16;}
+
+                    0x08 => {reg.ar = number;}
+                    0x09 => {reg.br = number;}
+                    0x0A => {reg.cr = number;}
+                    0x0B => {reg.dr = number;}
+
+                    _ => {}
+                }
+            }
 
             _ => {}
         }
