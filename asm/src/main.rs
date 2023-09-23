@@ -4,10 +4,53 @@ use std::collections::HashMap;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let filename = args[1].as_str();
+    let filepath = args[1].as_str();
 
-    let raw_file = fs::read_to_string(filename).unwrap().replace("\r", "");
-    let lines = raw_file.split("\n");
+    let mut bytes: Vec<u8> = Vec::new();
+
+    let mut raw_file = String::new();
+    let lines;
+
+    if args.len() > 3 && args[3] == "p" {
+        let files = fs::read_dir(filepath).unwrap();
+
+        for file in files {
+            let path = file.unwrap();
+            let mut file = fs::read_to_string(path.path().clone()).unwrap().replace("\r", "");
+            
+            if path.file_name().into_string().unwrap().ends_with(".h") {
+                for num in file.replace("\n", " ").split(" ") {
+                    
+                    let result: u8;
+                    if num.starts_with("0x") {
+                        if num.len() < 3 {error(&path.path().into_os_string().into_string().unwrap(), 0, &vec![String::from("header")], "invalid number")}
+                        result = u8::from_str_radix(&num.replace("_", "")[2..], 16).unwrap();
+                    } 
+                    else {
+                        if !num.parse::<u8>().is_ok() {error(&path.path().into_os_string().into_string().unwrap(), 0, &vec![String::from("header")], "invalid number")}
+                        result = num.parse::<u8>().unwrap();
+                    }
+
+                    bytes.push(result);
+                }
+                file = String::new();
+            }
+            else if path.file_name() != "main.asm" {
+                file = file.replace(".", &format!(".{}::", path.file_name().into_string().unwrap().replace(".asm", "")))
+            }
+
+            raw_file.push_str(&file);
+        }
+    }
+    else {
+        raw_file = fs::read_to_string(filepath).unwrap().replace("\r", "");
+    }
+
+    raw_file = raw_file.replace("call", "mov pc dr\nldi dx 16\nadd dx\npsh dr\njmp");
+
+    lines = raw_file.split("\n");
+
+    println!("{}", raw_file);
 
     let regs = HashMap::from([
         ("ax", 0x00),
@@ -27,8 +70,6 @@ fn main() {
 
         ("pc", 0x0C),
     ]);
-
-    let mut bytes: Vec<u8> = Vec::new();
 
     let mut labels: HashMap<String, usize> = HashMap::new();
 
@@ -79,6 +120,25 @@ fn main() {
             "wit" => {label_bytes += 1}
             "ubl" => {label_bytes += 7}
             "lbr" => {label_bytes += 4}
+            "ldd" => {label_bytes += 7}
+            "std" => {label_bytes += 7}
+            "ldr" => {label_bytes += 4}
+            "sdr" => {label_bytes += 4}
+            "sbd" => {label_bytes += 7}
+            "sbdr" => {label_bytes += 4}
+            "ldb" => {label_bytes += 7}
+            "ldbr" => {label_bytes += 4}
+            "jcid" => {label_bytes += 6}
+            "jnci" => {label_bytes += 6}
+            "ldcd" => {label_bytes += 7}
+            "stcd" => {label_bytes += 7}
+            "lcdr" => {label_bytes += 4}
+            "scdr" => {label_bytes += 4}
+            "sbcd" => {label_bytes += 7}
+            "sbcdr" => {label_bytes += 4}
+            "lcdb" => {label_bytes += 7}
+            "lcdbr" => {label_bytes += 4}
+            "ptrm" => {label_bytes += 9}
 
             _ => {}
         }
@@ -96,16 +156,16 @@ fn main() {
                 "nop" => {bytes.push(0x00);}
                 "hlt" => {bytes.push(0x01);}
                 "lod" => {
-                    if cmd.len() < 3 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 3 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x02);
 
                     let addr: u64;
                     if cmd[2].starts_with("0x") {
-                        if cmd[2].len() < 3 {error(filename, line_number, &cmd, "invalid number")}
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
                         addr = u64::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
                     } 
                     else {
-                        if !cmd[2].parse::<u64>().is_ok() {error(filename, line_number, &cmd, "invalid number")}
+                        if !cmd[2].parse::<u64>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
                         addr = cmd[2].parse::<u64>().unwrap();
                     }
 
@@ -115,20 +175,20 @@ fn main() {
                     bytes.push((addr >> 8) as u8);
                     bytes.push(addr as u8);
 
-                    if !regs.contains_key(cmd[1].as_str()) {error(filename, line_number, &cmd, "unknown register")}
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
                     bytes.push(regs[cmd[1].as_str()]);
                 }
                 "sto" => {
-                    if cmd.len() < 3 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 3 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x03);
 
                     let addr: u64;
                     if cmd[2].starts_with("0x") {
-                        if cmd[2].len() < 3 {error(filename, line_number, &cmd, "invalid number")}
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
                         addr = u64::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
                     } 
                     else {
-                        if !cmd[2].parse::<u64>().is_ok() {error(filename, line_number, &cmd, "invalid number")}
+                        if !cmd[2].parse::<u64>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
                         addr = cmd[2].parse::<u64>().unwrap();
                     }
 
@@ -138,23 +198,23 @@ fn main() {
                     bytes.push((addr >> 8) as u8);
                     bytes.push(addr as u8);
 
-                    if !regs.contains_key(cmd[1].as_str()) {error(filename, line_number, &cmd, "unknown register")}
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
                     bytes.push(regs[cmd[1].as_str()]);
                 }
                 "ldi" => {
-                    if cmd.len() < 3 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 3 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x04);
 
-                    if !regs.contains_key(cmd[1].as_str()) {error(filename, line_number, &cmd, "unknown register")}
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
                     bytes.push(regs[cmd[1].as_str()]);
 
                     let n: u64;
                     if cmd[2].starts_with("0x") {
-                        if cmd[2].len() < 3 {error(filename, line_number, &cmd, "invalid number")}
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
                         n = u64::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
                     } 
                     else {
-                        if !cmd[2].parse::<u64>().is_ok() {error(filename, line_number, &cmd, "invalid number")}
+                        if !cmd[2].parse::<u64>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
                         n = cmd[2].parse::<u64>().unwrap();
                     }
 
@@ -166,14 +226,14 @@ fn main() {
                     bytes.push(n as u8);
                 }
                 "mov" => {
-                    if cmd.len() < 3 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 3 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x05);
 
-                    if !regs.contains_key(cmd[1].as_str()) || !regs.contains_key(cmd[2].as_str()) {error(filename, line_number, &cmd, "unknown register")}
+                    if !regs.contains_key(cmd[1].as_str()) || !regs.contains_key(cmd[2].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
                     bytes.push((regs[cmd[2].as_str()] << 4) | regs[cmd[1].as_str()]); 
                 }
                 "add" => {
-                    if cmd.len() < 2 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x06);
 
                     match cmd[1].as_str() {
@@ -192,11 +252,11 @@ fn main() {
                         "cy" => {bytes.push(0x0A)}
                         "dy" => {bytes.push(0x0B)}
 
-                        _ => {error(filename, line_number, &cmd, "invalid register option")}
+                        _ => {error(filepath, line_number, &cmd, "invalid register option")}
                     }
                 }
                 "sub" => {
-                    if cmd.len() < 2 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x07);
 
                     let mut both = cmd[1].clone();
@@ -228,11 +288,11 @@ fn main() {
                         "cycr" => {bytes.push(0x12)}
                         "dydr" => {bytes.push(0x13)}
 
-                        _ => {error(filename, line_number, &cmd, "invalid register combination")}
+                        _ => {error(filepath, line_number, &cmd, "invalid register combination")}
                     }
                 }
                 "mul" => {
-                    if cmd.len() < 2 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x08);
                     
                     match cmd[1].as_str() {
@@ -241,11 +301,11 @@ fn main() {
                         "cr" => {bytes.push(0x02)}
                         "dr" => {bytes.push(0x03)}
 
-                        _ => {error(filename, line_number, &cmd, "invalid register option")}
+                        _ => {error(filepath, line_number, &cmd, "invalid register option")}
                     }
                 }
                 "div" => {
-                    if cmd.len() < 2 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x09);
                     
                     match cmd[1].as_str() {
@@ -254,14 +314,14 @@ fn main() {
                         "cr" => {bytes.push(0x02)}
                         "dr" => {bytes.push(0x03)}
 
-                        _ => {error(filename, line_number, &cmd, "invalid register option")}
+                        _ => {error(filepath, line_number, &cmd, "invalid register option")}
                     }
                 }
                 "jmp" => {
-                    if cmd.len() < 2 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x0A);
 
-                    if !labels.contains_key(cmd[1].as_str()) {error(filename, line_number, &cmd, "unknown label")}
+                    if !labels.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown label")}
                     let addr = labels[cmd[1].as_str()];
 
                     bytes.push((addr >> 32) as u8);
@@ -271,10 +331,10 @@ fn main() {
                     bytes.push(addr as u8);
                 }
                 "je" => {
-                    if cmd.len() < 2 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x0B);
 
-                    if !labels.contains_key(cmd[1].as_str()) {error(filename, line_number, &cmd, "unknown label")}
+                    if !labels.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown label")}
                     let addr = labels[cmd[1].as_str()];
 
                     bytes.push((addr >> 32) as u8);
@@ -284,10 +344,10 @@ fn main() {
                     bytes.push(addr as u8);
                 }
                 "jne" => {
-                    if cmd.len() < 2 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x0C);
 
-                    if !labels.contains_key(cmd[1].as_str()) {error(filename, line_number, &cmd, "unknown label")}
+                    if !labels.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown label")}
                     let addr = labels[cmd[1].as_str()];
 
                     bytes.push((addr >> 32) as u8);
@@ -297,10 +357,10 @@ fn main() {
                     bytes.push(addr as u8);
                 }
                 "jl" => {
-                    if cmd.len() < 2 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x0D);
 
-                    if !labels.contains_key(cmd[1].as_str()) {error(filename, line_number, &cmd, "unknown label")}
+                    if !labels.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown label")}
                     let addr = labels[cmd[1].as_str()];
 
                     bytes.push((addr >> 32) as u8);
@@ -310,10 +370,10 @@ fn main() {
                     bytes.push(addr as u8);
                 }
                 "jle" => {
-                    if cmd.len() < 2 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x0E);
 
-                    if !labels.contains_key(cmd[1].as_str()) {error(filename, line_number, &cmd, "unknown label")}
+                    if !labels.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown label")}
                     let addr = labels[cmd[1].as_str()];
 
                     bytes.push((addr >> 32) as u8);
@@ -323,10 +383,10 @@ fn main() {
                     bytes.push(addr as u8);
                 }
                 "jg" => {
-                    if cmd.len() < 2 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x0F);
 
-                    if !labels.contains_key(cmd[1].as_str()) {error(filename, line_number, &cmd, "unknown label")}
+                    if !labels.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown label")}
                     let addr = labels[cmd[1].as_str()];
 
                     bytes.push((addr >> 32) as u8);
@@ -336,10 +396,10 @@ fn main() {
                     bytes.push(addr as u8);
                 }
                 "jge" => {
-                    if cmd.len() < 2 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x10);
 
-                    if !labels.contains_key(cmd[1].as_str()) {error(filename, line_number, &cmd, "unknown label")}
+                    if !labels.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown label")}
                     let addr = labels[cmd[1].as_str()];
 
                     bytes.push((addr >> 32) as u8);
@@ -349,10 +409,10 @@ fn main() {
                     bytes.push(addr as u8);
                 }
                 "cmp" => {
-                    if cmd.len() < 2 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x11);
 
-                    if !labels.contains_key(cmd[1].as_str()) {error(filename, line_number, &cmd, "unknown label")}
+                    if !labels.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown label")}
                     let addr = labels[cmd[1].as_str()];
 
                     bytes.push((addr >> 32) as u8);
@@ -362,7 +422,7 @@ fn main() {
                     bytes.push(addr as u8);
                 }
                 "and" => {
-                    if cmd.len() < 2 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x12);
                     
                     match cmd[1].as_str() {
@@ -371,11 +431,11 @@ fn main() {
                         "cr" => {bytes.push(0x02)}
                         "dr" => {bytes.push(0x03)}
 
-                        _ => {error(filename, line_number, &cmd, "invalid register option")}
+                        _ => {error(filepath, line_number, &cmd, "invalid register option")}
                     }
                 }
                 "or" => {
-                    if cmd.len() < 2 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x13);
                     
                     match cmd[1].as_str() {
@@ -384,11 +444,11 @@ fn main() {
                         "cr" => {bytes.push(0x02)}
                         "dr" => {bytes.push(0x03)}
 
-                        _ => {error(filename, line_number, &cmd, "invalid register option")}
+                        _ => {error(filepath, line_number, &cmd, "invalid register option")}
                     }
                 }
                 "xor" => {
-                    if cmd.len() < 2 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x14);
                     
                     match cmd[1].as_str() {
@@ -397,11 +457,11 @@ fn main() {
                         "cr" => {bytes.push(0x02)}
                         "dr" => {bytes.push(0x03)}
 
-                        _ => {error(filename, line_number, &cmd, "invalid register option")}
+                        _ => {error(filepath, line_number, &cmd, "invalid register option")}
                     }
                 }
                 "not" => {
-                    if cmd.len() < 2 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x15);
                     
                     match cmd[1].as_str() {
@@ -415,11 +475,11 @@ fn main() {
                         "cy" => {bytes.push(0x06)}
                         "dy" => {bytes.push(0x07)}
 
-                        _ => {error(filename, line_number, &cmd, "invalid register option")}
+                        _ => {error(filepath, line_number, &cmd, "invalid register option")}
                     }
                 }
                 "shl" => {
-                    if cmd.len() < 3 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 3 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x16);
                     
                     match cmd[1].as_str() {
@@ -433,23 +493,23 @@ fn main() {
                         "cy" => {bytes.push(0x06)}
                         "dy" => {bytes.push(0x07)}
 
-                        _ => {error(filename, line_number, &cmd, "invalid register option")}
+                        _ => {error(filepath, line_number, &cmd, "invalid register option")}
                     }
 
                     let n: u8;
                     if cmd[2].starts_with("0x") {
-                        if cmd[2].len() < 3 {error(filename, line_number, &cmd, "invalid number")}
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
                         n = u8::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
                     } 
                     else {
-                        if !cmd[2].parse::<u8>().is_ok() {error(filename, line_number, &cmd, "invalid number")}
+                        if !cmd[2].parse::<u8>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
                         n = cmd[2].parse::<u8>().unwrap();
                     }
 
                     bytes.push(n);
                 }
                 "shr" => {
-                    if cmd.len() < 3 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 3 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x17);
                     
                     match cmd[1].as_str() {
@@ -463,95 +523,95 @@ fn main() {
                         "cy" => {bytes.push(0x06)}
                         "dy" => {bytes.push(0x07)}
 
-                        _ => {error(filename, line_number, &cmd, "invalid register option")}
+                        _ => {error(filepath, line_number, &cmd, "invalid register option")}
                     }
 
                     let n: u8;
                     if cmd[2].starts_with("0x") {
-                        if cmd[2].len() < 3 {error(filename, line_number, &cmd, "invalid number")}
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
                         n = u8::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
                     } 
                     else {
-                        if !cmd[2].parse::<u8>().is_ok() {error(filename, line_number, &cmd, "invalid number")}
+                        if !cmd[2].parse::<u8>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
                         n = cmd[2].parse::<u8>().unwrap();
                     }
 
                     bytes.push(n);
                 }
                 "psh" => {
-                    if cmd.len() < 2 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x18);
 
-                    if !regs.contains_key(cmd[1].as_str()) {error(filename, line_number, &cmd, "unknown register")}
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
                     bytes.push(regs[cmd[1].as_str()]);
                 }
                 "pop" => {
-                    if cmd.len() < 2 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x19);
 
-                    if !regs.contains_key(cmd[1].as_str()) {error(filename, line_number, &cmd, "unknown register")}
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
                     bytes.push(regs[cmd[1].as_str()]);
                 }
                 "rnd" => {
-                    if cmd.len() < 2 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x1A);
 
-                    if !regs.contains_key(cmd[1].as_str()) {error(filename, line_number, &cmd, "unknown register")}
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
                     bytes.push(regs[cmd[1].as_str()]);
                 }
                 "lor" => {
-                    if cmd.len() < 4 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 4 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x1B);
 
-                    if !regs.contains_key(cmd[3].as_str()) {error(filename, line_number, &cmd, "unknown register")}
+                    if !regs.contains_key(cmd[3].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
                     bytes.push(regs[cmd[3].as_str()]);
 
                     let n: u8;
                     if cmd[2].starts_with("0x") {
-                        if cmd[2].len() < 3 {error(filename, line_number, &cmd, "invalid number")}
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
                         n = u8::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
                     } 
                     else {
-                        if !cmd[2].parse::<u8>().is_ok() {error(filename, line_number, &cmd, "invalid number")}
+                        if !cmd[2].parse::<u8>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
                         n = cmd[2].parse::<u8>().unwrap();
                     }
                     bytes.push(n);
 
-                    if !regs.contains_key(cmd[1].as_str()) {error(filename, line_number, &cmd, "unknown register")}
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
                     bytes.push(regs[cmd[1].as_str()]);
                 }
                 "str" => {
-                    if cmd.len() < 4 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 4 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x1C);
 
-                    if !regs.contains_key(cmd[3].as_str()) {error(filename, line_number, &cmd, "unknown register")}
+                    if !regs.contains_key(cmd[3].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
                     bytes.push(regs[cmd[3].as_str()]);
 
                     let n: u8;
                     if cmd[2].starts_with("0x") {
-                        if cmd[2].len() < 3 {error(filename, line_number, &cmd, "invalid number")}
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
                         n = u8::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
                     } 
                     else {
-                        if !cmd[2].parse::<u8>().is_ok() {error(filename, line_number, &cmd, "invalid number")}
+                        if !cmd[2].parse::<u8>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
                         n = cmd[2].parse::<u8>().unwrap();
                     }
                     bytes.push(n);
 
-                    if !regs.contains_key(cmd[1].as_str()) {error(filename, line_number, &cmd, "unknown register")}
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
                     bytes.push(regs[cmd[1].as_str()]);
                 }
                 "ubs" => {
-                    if cmd.len() < 3 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 3 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x1D);
 
                     let addr: u64;
                     if cmd[2].starts_with("0x") {
-                        if cmd[2].len() < 3 {error(filename, line_number, &cmd, "invalid number")}
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
                         addr = u64::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
                     } 
                     else {
-                        if !cmd[2].parse::<u64>().is_ok() {error(filename, line_number, &cmd, "invalid number")}
+                        if !cmd[2].parse::<u64>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
                         addr = cmd[2].parse::<u64>().unwrap();
                     }
 
@@ -561,56 +621,56 @@ fn main() {
                     bytes.push((addr >> 8) as u8);
                     bytes.push(addr as u8);
 
-                    if !regs.contains_key(cmd[1].as_str()) {error(filename, line_number, &cmd, "unknown register")}
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
                     bytes.push(regs[cmd[1].as_str()]);
                 }
                 "sbr" => {
-                    if cmd.len() < 4 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 4 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x1E);
 
-                    if !regs.contains_key(cmd[3].as_str()) {error(filename, line_number, &cmd, "unknown register")}
+                    if !regs.contains_key(cmd[3].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
                     bytes.push(regs[cmd[3].as_str()]);
 
                     let n: u8;
                     if cmd[2].starts_with("0x") {
-                        if cmd[2].len() < 3 {error(filename, line_number, &cmd, "invalid number")}
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
                         n = u8::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
                     } 
                     else {
-                        if !cmd[2].parse::<u8>().is_ok() {error(filename, line_number, &cmd, "invalid number")}
+                        if !cmd[2].parse::<u8>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
                         n = cmd[2].parse::<u8>().unwrap();
                     }
                     bytes.push(n); 
 
-                    if !regs.contains_key(cmd[1].as_str()) {error(filename, line_number, &cmd, "unknown register")}
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
                     bytes.push(regs[cmd[1].as_str()]);
                 }
                 "inc" => {
-                    if cmd.len() < 2 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x1F);
 
-                    if !regs.contains_key(cmd[1].as_str()) {error(filename, line_number, &cmd, "unknown register")}
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
                     bytes.push(regs[cmd[1].as_str()]);
                 }
                 "dec" => {
-                    if cmd.len() < 2 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x20);
 
-                    if !regs.contains_key(cmd[1].as_str()) {error(filename, line_number, &cmd, "unknown register")}
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
                     bytes.push(regs[cmd[1].as_str()]);
                 }
                 "wit" => {bytes.push(0x21);}
                 "ubl" => {
-                    if cmd.len() < 3 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 3 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x22);
 
                     let addr: u64;
                     if cmd[2].starts_with("0x") {
-                        if cmd[2].len() < 3 {error(filename, line_number, &cmd, "invalid number")}
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
                         addr = u64::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
                     } 
                     else {
-                        if !cmd[2].parse::<u64>().is_ok() {error(filename, line_number, &cmd, "invalid number")}
+                        if !cmd[2].parse::<u64>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
                         addr = cmd[2].parse::<u64>().unwrap();
                     }
 
@@ -620,50 +680,465 @@ fn main() {
                     bytes.push((addr >> 8) as u8);
                     bytes.push(addr as u8);
 
-                    if !regs.contains_key(cmd[1].as_str()) {error(filename, line_number, &cmd, "unknown register")}
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
                     bytes.push(regs[cmd[1].as_str()]);
                 }
                 "lbr" => {
-                    if cmd.len() < 4 {error(filename, line_number, &cmd, "missing argument")}
+                    if cmd.len() < 4 {error(filepath, line_number, &cmd, "missing argument")}
                     bytes.push(0x23);
 
-                    if !regs.contains_key(cmd[3].as_str()) {error(filename, line_number, &cmd, "unknown register")}
+                    if !regs.contains_key(cmd[3].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
                     bytes.push(regs[cmd[3].as_str()]);
 
                     let n: u8;
                     if cmd[2].starts_with("0x") {
-                        if cmd[2].len() < 3 {error(filename, line_number, &cmd, "invalid number")}
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
                         n = u8::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
                     } 
                     else {
-                        if !cmd[2].parse::<u8>().is_ok() {error(filename, line_number, &cmd, "invalid number")}
+                        if !cmd[2].parse::<u8>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
                         n = cmd[2].parse::<u8>().unwrap();
                     }
                     bytes.push(n);
 
-                    if !regs.contains_key(cmd[1].as_str()) {error(filename, line_number, &cmd, "unknown register")}
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
                     bytes.push(regs[cmd[1].as_str()]);
                 }
+                "ldd" => {
+                    if cmd.len() < 3 {error(filepath, line_number, &cmd, "missing argument")}
+                    bytes.push(0x24);
+
+                    let addr: u64;
+                    if cmd[2].starts_with("0x") {
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
+                        addr = u64::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
+                    } 
+                    else {
+                        if !cmd[2].parse::<u64>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
+                        addr = cmd[2].parse::<u64>().unwrap();
+                    }
+
+                    bytes.push((addr >> 32) as u8);
+                    bytes.push((addr >> 24) as u8);
+                    bytes.push((addr >> 16) as u8);
+                    bytes.push((addr >> 8) as u8);
+                    bytes.push(addr as u8);
+
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[1].as_str()]);
+                }
+                "std" => {
+                    if cmd.len() < 3 {error(filepath, line_number, &cmd, "missing argument")}
+                    bytes.push(0x25);
+
+                    let addr: u64;
+                    if cmd[2].starts_with("0x") {
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
+                        addr = u64::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
+                    } 
+                    else {
+                        if !cmd[2].parse::<u64>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
+                        addr = cmd[2].parse::<u64>().unwrap();
+                    }
+
+                    bytes.push((addr >> 32) as u8);
+                    bytes.push((addr >> 24) as u8);
+                    bytes.push((addr >> 16) as u8);
+                    bytes.push((addr >> 8) as u8);
+                    bytes.push(addr as u8);
+
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[1].as_str()]);
+                }
+                "ldr" => {
+                    if cmd.len() < 4 {error(filepath, line_number, &cmd, "missing argument")}
+                    bytes.push(0x26);
+
+                    if !regs.contains_key(cmd[3].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[3].as_str()]);
+
+                    let n: u8;
+                    if cmd[2].starts_with("0x") {
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
+                        n = u8::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
+                    } 
+                    else {
+                        if !cmd[2].parse::<u8>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
+                        n = cmd[2].parse::<u8>().unwrap();
+                    }
+                    bytes.push(n);
+
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[1].as_str()]);
+                }
+                "sdr" => {
+                    if cmd.len() < 4 {error(filepath, line_number, &cmd, "missing argument")}
+                    bytes.push(0x27);
+
+                    if !regs.contains_key(cmd[3].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[3].as_str()]);
+
+                    let n: u8;
+                    if cmd[2].starts_with("0x") {
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
+                        n = u8::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
+                    } 
+                    else {
+                        if !cmd[2].parse::<u8>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
+                        n = cmd[2].parse::<u8>().unwrap();
+                    }
+                    bytes.push(n);
+
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[1].as_str()]);
+                }
+                "sbd" => {
+                    if cmd.len() < 3 {error(filepath, line_number, &cmd, "missing argument")}
+                    bytes.push(0x28);
+
+                    let addr: u64;
+                    if cmd[2].starts_with("0x") {
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
+                        addr = u64::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
+                    } 
+                    else {
+                        if !cmd[2].parse::<u64>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
+                        addr = cmd[2].parse::<u64>().unwrap();
+                    }
+
+                    bytes.push((addr >> 32) as u8);
+                    bytes.push((addr >> 24) as u8);
+                    bytes.push((addr >> 16) as u8);
+                    bytes.push((addr >> 8) as u8);
+                    bytes.push(addr as u8);
+
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[1].as_str()]);
+                }
+                "sbdr" => {
+                    if cmd.len() < 4 {error(filepath, line_number, &cmd, "missing argument")}
+                    bytes.push(0x29);
+
+                    if !regs.contains_key(cmd[3].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[3].as_str()]);
+
+                    let n: u8;
+                    if cmd[2].starts_with("0x") {
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
+                        n = u8::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
+                    } 
+                    else {
+                        if !cmd[2].parse::<u8>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
+                        n = cmd[2].parse::<u8>().unwrap();
+                    }
+                    bytes.push(n); 
+
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[1].as_str()]);
+                }
+                "ldb" => {
+                    if cmd.len() < 3 {error(filepath, line_number, &cmd, "missing argument")}
+                    bytes.push(0x2A);
+
+                    let addr: u64;
+                    if cmd[2].starts_with("0x") {
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
+                        addr = u64::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
+                    } 
+                    else {
+                        if !cmd[2].parse::<u64>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
+                        addr = cmd[2].parse::<u64>().unwrap();
+                    }
+
+                    bytes.push((addr >> 32) as u8);
+                    bytes.push((addr >> 24) as u8);
+                    bytes.push((addr >> 16) as u8);
+                    bytes.push((addr >> 8) as u8);
+                    bytes.push(addr as u8);
+
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[1].as_str()]);
+                }
+                "ldbr" => {
+                    if cmd.len() < 4 {error(filepath, line_number, &cmd, "missing argument")}
+                    bytes.push(0x2B);
+
+                    if !regs.contains_key(cmd[3].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[3].as_str()]);
+
+                    let n: u8;
+                    if cmd[2].starts_with("0x") {
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
+                        n = u8::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
+                    } 
+                    else {
+                        if !cmd[2].parse::<u8>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
+                        n = cmd[2].parse::<u8>().unwrap();
+                    }
+                    bytes.push(n);
+
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[1].as_str()]);
+                }         
+                "jcid" => {
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
+                    bytes.push(0x2C);
+
+                    if !labels.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown label")}
+                    let addr = labels[cmd[1].as_str()];
+
+                    bytes.push((addr >> 32) as u8);
+                    bytes.push((addr >> 24) as u8);
+                    bytes.push((addr >> 16) as u8);
+                    bytes.push((addr >> 8) as u8);
+                    bytes.push(addr as u8);
+                }
+                "jnci" => {
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
+                    bytes.push(0x2D);
+
+                    if !labels.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown label")}
+                    let addr = labels[cmd[1].as_str()];
+
+                    bytes.push((addr >> 32) as u8);
+                    bytes.push((addr >> 24) as u8);
+                    bytes.push((addr >> 16) as u8);
+                    bytes.push((addr >> 8) as u8);
+                    bytes.push(addr as u8);
+                }                
+                "ldcd" => {
+                    if cmd.len() < 3 {error(filepath, line_number, &cmd, "missing argument")}
+                    bytes.push(0x2E);
+
+                    let addr: u64;
+                    if cmd[2].starts_with("0x") {
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
+                        addr = u64::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
+                    } 
+                    else {
+                        if !cmd[2].parse::<u64>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
+                        addr = cmd[2].parse::<u64>().unwrap();
+                    }
+
+                    bytes.push((addr >> 32) as u8);
+                    bytes.push((addr >> 24) as u8);
+                    bytes.push((addr >> 16) as u8);
+                    bytes.push((addr >> 8) as u8);
+                    bytes.push(addr as u8);
+
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[1].as_str()]);
+                }
+                "stcd" => {
+                    if cmd.len() < 3 {error(filepath, line_number, &cmd, "missing argument")}
+                    bytes.push(0x2F);
+
+                    let addr: u64;
+                    if cmd[2].starts_with("0x") {
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
+                        addr = u64::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
+                    } 
+                    else {
+                        if !cmd[2].parse::<u64>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
+                        addr = cmd[2].parse::<u64>().unwrap();
+                    }
+
+                    bytes.push((addr >> 32) as u8);
+                    bytes.push((addr >> 24) as u8);
+                    bytes.push((addr >> 16) as u8);
+                    bytes.push((addr >> 8) as u8);
+                    bytes.push(addr as u8);
+
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[1].as_str()]);
+                }
+                "lcdr" => {
+                    if cmd.len() < 4 {error(filepath, line_number, &cmd, "missing argument")}
+                    bytes.push(0x30);
+
+                    if !regs.contains_key(cmd[3].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[3].as_str()]);
+
+                    let n: u8;
+                    if cmd[2].starts_with("0x") {
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
+                        n = u8::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
+                    } 
+                    else {
+                        if !cmd[2].parse::<u8>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
+                        n = cmd[2].parse::<u8>().unwrap();
+                    }
+                    bytes.push(n);
+
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[1].as_str()]);
+                }
+                "scdr" => {
+                    if cmd.len() < 4 {error(filepath, line_number, &cmd, "missing argument")}
+                    bytes.push(0x31);
+
+                    if !regs.contains_key(cmd[3].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[3].as_str()]);
+
+                    let n: u8;
+                    if cmd[2].starts_with("0x") {
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
+                        n = u8::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
+                    } 
+                    else {
+                        if !cmd[2].parse::<u8>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
+                        n = cmd[2].parse::<u8>().unwrap();
+                    }
+                    bytes.push(n);
+
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[1].as_str()]);
+                }
+                "sbcd" => {
+                    if cmd.len() < 3 {error(filepath, line_number, &cmd, "missing argument")}
+                    bytes.push(0x32);
+
+                    let addr: u64;
+                    if cmd[2].starts_with("0x") {
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
+                        addr = u64::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
+                    } 
+                    else {
+                        if !cmd[2].parse::<u64>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
+                        addr = cmd[2].parse::<u64>().unwrap();
+                    }
+
+                    bytes.push((addr >> 32) as u8);
+                    bytes.push((addr >> 24) as u8);
+                    bytes.push((addr >> 16) as u8);
+                    bytes.push((addr >> 8) as u8);
+                    bytes.push(addr as u8);
+
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[1].as_str()]);
+                }
+                "sbcdr" => {
+                    if cmd.len() < 4 {error(filepath, line_number, &cmd, "missing argument")}
+                    bytes.push(0x33);
+
+                    if !regs.contains_key(cmd[3].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[3].as_str()]);
+
+                    let n: u8;
+                    if cmd[2].starts_with("0x") {
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
+                        n = u8::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
+                    } 
+                    else {
+                        if !cmd[2].parse::<u8>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
+                        n = cmd[2].parse::<u8>().unwrap();
+                    }
+                    bytes.push(n); 
+
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[1].as_str()]);
+                }
+                "lcdb" => {
+                    if cmd.len() < 3 {error(filepath, line_number, &cmd, "missing argument")}
+                    bytes.push(0x34);
+
+                    let addr: u64;
+                    if cmd[2].starts_with("0x") {
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
+                        addr = u64::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
+                    } 
+                    else {
+                        if !cmd[2].parse::<u64>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
+                        addr = cmd[2].parse::<u64>().unwrap();
+                    }
+
+                    bytes.push((addr >> 32) as u8);
+                    bytes.push((addr >> 24) as u8);
+                    bytes.push((addr >> 16) as u8);
+                    bytes.push((addr >> 8) as u8);
+                    bytes.push(addr as u8);
+
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[1].as_str()]);
+                }
+                "lcdbr" => {
+                    if cmd.len() < 4 {error(filepath, line_number, &cmd, "missing argument")}
+                    bytes.push(0x35);
+
+                    if !regs.contains_key(cmd[3].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[3].as_str()]);
+
+                    let n: u8;
+                    if cmd[2].starts_with("0x") {
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
+                        n = u8::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
+                    } 
+                    else {
+                        if !cmd[2].parse::<u8>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
+                        n = cmd[2].parse::<u8>().unwrap();
+                    }
+                    bytes.push(n);
+
+                    if !regs.contains_key(cmd[1].as_str()) {error(filepath, line_number, &cmd, "unknown register")}
+                    bytes.push(regs[cmd[1].as_str()]);
+                }
+                "ptrm" => {
+                    if cmd.len() < 3 {error(filepath, line_number, &cmd, "missing argument")}
+                    bytes.push(0x36);
+
+                    let n: u64;
+                    if cmd[1].starts_with("0x") {
+                        if cmd[1].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
+                        n = u64::from_str_radix(&cmd[1].replace("_", "")[2..], 16).unwrap();
+                    } 
+                    else {
+                        if !cmd[1].parse::<u64>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
+                        n = cmd[1].parse::<u64>().unwrap();
+                    }
+
+                    bytes.push((n >> 24) as u8);
+                    bytes.push((n >> 16) as u8);
+                    bytes.push((n >> 8) as u8);
+                    bytes.push(n as u8);
+
+                    let n: u64;
+                    if cmd[2].starts_with("0x") {
+                        if cmd[2].len() < 3 {error(filepath, line_number, &cmd, "invalid number")}
+                        n = u64::from_str_radix(&cmd[2].replace("_", "")[2..], 16).unwrap();
+                    } 
+                    else {
+                        if !cmd[2].parse::<u64>().is_ok() {error(filepath, line_number, &cmd, "invalid number")}
+                        n = cmd[2].parse::<u64>().unwrap();
+                    }
+
+                    bytes.push((n >> 24) as u8);
+                    bytes.push((n >> 16) as u8);
+                    bytes.push((n >> 8) as u8);
+                    bytes.push(n as u8);
+                }
+
 
                 "dir" => {
-                    if cmd.len() < 2 {error(filename, line_number, &cmd, "missing argument")}
-                    if cmd[1].len() < 3 || !u8::from_str_radix(&cmd[1][2..], 16).is_ok() {error(filename, line_number, &cmd, "invalid 8-bit hexadecimal number")}
+                    if cmd.len() < 2 {error(filepath, line_number, &cmd, "missing argument")}
+                    if cmd[1].len() < 3 || !u8::from_str_radix(&cmd[1][2..], 16).is_ok() {error(filepath, line_number, &cmd, "invalid 8-bit hexadecimal number")}
                     bytes.push(u8::from_str_radix(&cmd[1][2..], 16).unwrap())
                 }
 
                 "" => {}
-                _ => {error(filename, line_number, &cmd, "unexpected command")}
+                _ => {error(filepath, line_number, &cmd, "unexpected command")}
             }
         }
         line_number += 1;
     }
+
+    //println!("{:0x?}", bytes);
     
     fs::write(&args[2], &bytes).unwrap();
 
     println!("\n{} {} {}\n", "Successfully compiled".bright_green().bold(), format!("{} bytes", bytes.len()).bright_yellow(), "".bright_green().bold());
 }
 
-fn error(filename: &str, line_number: usize, cmd: &Vec<String>, error: &str) {
-    println!("\n{}: {}: {} \"{}\"\n", "Error".bright_red().bold(), format!("{} at", error).bright_yellow(), format!("{}:{}", filename, line_number).bright_blue().underline(), cmd[0].to_uppercase().bold().bright_red());
+fn error(filepath: &str, line_number: usize, cmd: &Vec<String>, error: &str) {
+    println!("\n{}: {}: {} \"{}\"\n", "Error".bright_red().bold(), format!("{} at", error).bright_yellow(), format!("{}:{}", filepath, line_number).bright_blue().underline(), cmd[0].to_uppercase().bold().bright_red());
     exit(0);
 }
