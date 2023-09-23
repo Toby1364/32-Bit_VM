@@ -54,6 +54,12 @@ impl Registers {
 
 static RAM: Mutex<[u8; 8 << 20]> = Mutex::new([0; 8 << 20]);
 
+static DRIVE: Mutex<[u8; 100 << 20]> = Mutex::new([0; 100 << 20]);
+
+static DRIVE_FLAGS: Mutex<[bool; 100]> = Mutex::new([false; 100]);
+
+static CD_DRIVE: Mutex<[u8; 16 << 20]> = Mutex::new([0; 16 << 20]);
+
 fn window_conf() -> Conf {
     Conf {
         window_title: "32VM".to_owned(),
@@ -80,7 +86,7 @@ async fn main() {
     RAM.lock().unwrap()[0x00_010E] = 0x00;
     RAM.lock().unwrap()[0x00_010F] = 0x04;*/ 
 
-    let program = fs::read("out.bin").unwrap();
+    let program = fs::read("boot.bin").unwrap();
 
     //println!("{:0x?}", program);
 
@@ -95,9 +101,26 @@ async fn main() {
         i += 1;
     }*/
 
+    let cd = fs::read("cd.bin").unwrap();
+
+    for i in 0..cd.len() {
+        CD_DRIVE.lock().unwrap()[0x00_0000 + i] = cd[i];
+    }
+
+    /*for i in 0..100 {
+        let drive = fs::read(format!("DRIVE/{}.BIN", i)).unwrap();
+        for j in 0..drive.len() {
+            DRIVE.lock().unwrap()[(0x10_0000 * i) + j] = drive[i];
+        }
+    }*/
+
     thread::spawn(move || {
-        core(0x00_00FF, 0x70_0000);
+        saver();
     });
+
+    /*thread::spawn(move || {
+        core(0x00_00FF, 0x70_0000, 0);
+    });*/
 
     let fonts = [
         load_ttf_font_from_bytes(include_bytes!("../fonts/Perfect_DOS_VGA_437_Win.ttf")).unwrap()
@@ -192,7 +215,7 @@ async fn main() {
     }
 }
 
-fn core(ptr: usize, stck_ptr: usize) {
+fn core(ptr: usize, stck_ptr: usize, core_id: u32) {
     let mut reg: Registers = Registers::new();
     reg.ptr = ptr;
     reg.stck_ptr = stck_ptr;
@@ -201,7 +224,7 @@ fn core(ptr: usize, stck_ptr: usize) {
         let inst = RAM.lock().unwrap()[reg.ptr + reg.pc];
         reg.pc += 1;
 
-        println!("{:?}", reg);
+        //println!("{:?}", reg);
 
         //println!("{:#08X}: {:#04X}", reg.pc - 1, inst);
 
@@ -319,10 +342,13 @@ fn core(ptr: usize, stck_ptr: usize) {
                     0x0A => {reg.cr = number32; reg.pc += 4;}
                     0x0B => {reg.dr = number32; reg.pc += 4;}
 
+                    0x0C => {reg.pc = number32 as usize; reg.pc += 4;}
+                    0x0D => {reg.ptr = number32 as usize; reg.pc += 4;}
+
                     _ => {}
                 }
             }
-            0x05 => { //MOV: 1b reg-reg,
+            0x05 => { // MOV: 1b reg-reg,
                 //println!("MOV");
                 let first_reg = (RAM.lock().unwrap()[reg.ptr + reg.pc] << 4) >> 4;
                 let second_reg = RAM.lock().unwrap()[reg.ptr + reg.pc] >> 4;
@@ -1064,8 +1090,826 @@ fn core(ptr: usize, stck_ptr: usize) {
                     _ => {}
                 }
             }
+            0x24 => { // LDD: 5b addr, 1b reg
+                //println!("LDD");
+                let tram = RAM.lock().unwrap();
+                let tdrive = DRIVE.lock().unwrap();
+                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 32) | 
+                                ((tram[reg.ptr + reg.pc + 1] as u64) << 24) | 
+                                ((tram[reg.ptr + reg.pc + 2] as u64) << 16) | 
+                                ((tram[reg.ptr + reg.pc + 3] as u64) << 8) | 
+                                ((tram[reg.ptr + reg.pc + 4] as u64))) as usize;
+
+                DRIVE_FLAGS.lock().unwrap()[addr / 0x10_0000] = true;
+
+                reg.pc += 5;
+                let register_index = tram[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let number32 = ((tdrive[addr] as u32) << 24) | ((tdrive[addr + 1] as u32) << 16) | ((tdrive[addr + 2] as u32) << 8) | (tdrive[addr + 3] as u32);
+                let number16 = ((tdrive[addr] as u16) << 8) | (tdrive[addr + 1] as u16);
+
+                match register_index {
+                    0x00 => {reg.ax = number32;}
+                    0x01 => {reg.bx = number32;}
+                    0x02 => {reg.cx = number16;}
+                    0x03 => {reg.dx = number16;}
+
+                    0x04 => {reg.ay = number32;}
+                    0x05 => {reg.by = number32;}
+                    0x06 => {reg.cy = number16;}
+                    0x07 => {reg.dy = number16;}
+
+                    0x08 => {reg.ar = number32;}
+                    0x09 => {reg.br = number32;}
+                    0x0A => {reg.cr = number32;}
+                    0x0B => {reg.dr = number32;}
+
+                    _ => {}
+                }
+            }
+            0x25 => { // STD: 5b addr, 1b reg
+                //println!("STD");
+                let tram = RAM.lock().unwrap();
+                let mut tdrive = DRIVE.lock().unwrap();
+                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 32) |
+                                ((tram[reg.ptr + reg.pc + 1] as u64) << 24) |
+                                ((tram[reg.ptr + reg.pc + 2] as u64) << 16) |
+                                ((tram[reg.ptr + reg.pc + 3] as u64) << 8) |
+                                ((tram[reg.ptr + reg.pc + 4] as u64))) as usize;
+
+                DRIVE_FLAGS.lock().unwrap()[addr / 0x10_0000] = true;
+
+                reg.pc += 5;
+                let register_index = tram[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let mut num32= None;
+                let mut num16 = 0;
+
+                match register_index {
+                    0x00 => {num32 = Some(reg.ax);}
+                    0x01 => {num32 = Some(reg.bx);}
+                    0x02 => {num16 = reg.cx;}
+                    0x03 => {num16 = reg.dx;}
+
+                    0x04 => {num32 = Some(reg.ay);}
+                    0x05 => {num32 = Some(reg.by);}
+                    0x06 => {num16 = reg.cy;}
+                    0x07 => {num16 = reg.dy;}
+
+                    0x08 => {num32 = Some(reg.ar);}
+                    0x09 => {num32 = Some(reg.br);}
+                    0x0A => {num32 = Some(reg.cr);}
+                    0x0B => {num32 = Some(reg.dr);}
+                    _ => {}
+                }
+
+                if num32 != None {
+                    let num32 = num32.unwrap();
+                    tdrive[addr] = (num32 >> 24) as u8;
+                    tdrive[addr + 1] = (num32 >> 16) as u8;
+                    tdrive[addr + 2] = (num32 >> 8) as u8;
+                    tdrive[addr + 3] = num32 as u8;
+                }
+                else {
+                    tdrive[addr] = (num16 >> 8) as u8;
+                    tdrive[addr + 1] = num16 as u8;
+                }
+            }
+            0x26 => { // LDR: 1b reg, 1b addr, 1b reg
+                //println!("LDR");
+                let register_index = RAM.lock().unwrap()[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let mut value = 0;
+
+                match register_index {
+                    0x00 => {value = reg.ax;}
+                    0x01 => {value = reg.bx;}
+                    0x02 => {value = reg.cx as u32;}
+                    0x03 => {value = reg.dx as u32;}
+
+                    0x04 => {value = reg.ay;}
+                    0x05 => {value = reg.by;}
+                    0x06 => {value = reg.cy as u32;}
+                    0x07 => {value = reg.dy as u32;}
+
+                    0x08 => {value = reg.ar;}
+                    0x09 => {value = reg.br;}
+                    0x0A => {value = reg.cr;}
+                    0x0B => {value = reg.dr;}
+
+                    _ => {}
+                }
+
+                let tram = RAM.lock().unwrap();
+                let tdrive = DRIVE.lock().unwrap();
+                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 16) | (value as u64)) as usize;
+                reg.pc += 1;
+                let register_index = tram[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                DRIVE_FLAGS.lock().unwrap()[addr / 0x10_0000] = true;
+
+                let number32 = ((tdrive[addr] as u32) << 24) | ((tdrive[addr + 1] as u32) << 16) | ((tdrive[addr + 2] as u32) << 8) | (tdrive[addr + 3] as u32);
+                let number16 = ((tdrive[addr] as u16) << 8) | (tdrive[addr + 1] as u16);
+
+                match register_index {
+                    0x00 => {reg.ax = number32;}
+                    0x01 => {reg.bx = number32;}
+                    0x02 => {reg.cx = number16;}
+                    0x03 => {reg.dx = number16;}
+
+                    0x04 => {reg.ay = number32;}
+                    0x05 => {reg.by = number32;}
+                    0x06 => {reg.cy = number16;}
+                    0x07 => {reg.dy = number16;}
+
+                    0x08 => {reg.ar = number32;}
+                    0x09 => {reg.br = number32;}
+                    0x0A => {reg.cr = number32;}
+                    0x0B => {reg.dr = number32;}
+
+                    _ => {}
+                }
+            }
+            0x27 => { // SDR: 1b reg, 1b addr, 1b reg
+                //println!("SDR");
+                let register_index = RAM.lock().unwrap()[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let mut value = 0;
+
+                match register_index {
+                    0x00 => {value = reg.ax;}
+                    0x01 => {value = reg.bx;}
+                    0x02 => {value = reg.cx as u32;}
+                    0x03 => {value = reg.dx as u32;}
+
+                    0x04 => {value = reg.ay;}
+                    0x05 => {value = reg.by;}
+                    0x06 => {value = reg.cy as u32;}
+                    0x07 => {value = reg.dy as u32;}
+
+                    0x08 => {value = reg.ar;}
+                    0x09 => {value = reg.br;}
+                    0x0A => {value = reg.cr;}
+                    0x0B => {value = reg.dr;}
+
+                    _ => {}
+                }
+
+                let tram = RAM.lock().unwrap();
+                let mut tdrive = DRIVE.lock().unwrap();
+                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 16) | (value as u64)) as usize;
+                reg.pc += 1;
+                let register_index = tram[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                DRIVE_FLAGS.lock().unwrap()[addr / 0x10_0000] = true;
+
+
+                let mut num32= None;
+                let mut num16 = 0;
+
+                match register_index {
+                    0x00 => {num32 = Some(reg.ax);}
+                    0x01 => {num32 = Some(reg.bx);}
+                    0x02 => {num16 = reg.cx;}
+                    0x03 => {num16 = reg.dx;}
+
+                    0x04 => {num32 = Some(reg.ay);}
+                    0x05 => {num32 = Some(reg.by);}
+                    0x06 => {num16 = reg.cy;}
+                    0x07 => {num16 = reg.dy;}
+
+                    0x08 => {num32 = Some(reg.ar);}
+                    0x09 => {num32 = Some(reg.br);}
+                    0x0A => {num32 = Some(reg.cr);}
+                    0x0B => {num32 = Some(reg.dr);}
+                    _ => {}
+                }
+
+                if num32 != None {
+                    let num32 = num32.unwrap();
+                    tdrive[addr] = (num32 >> 24) as u8;
+                    tdrive[addr + 1] = (num32 >> 16) as u8;
+                    tdrive[addr + 2] = (num32 >> 8) as u8;
+                    tdrive[addr + 3] = num32 as u8;
+                }
+                else {
+                    tdrive[addr] = (num16 >> 8) as u8;
+                    tdrive[addr + 1] = num16 as u8;
+                }
+            }
+            0x28 => { // SBD: 5b addr, 1b reg
+                //println!("SBD");
+                let tram = RAM.lock().unwrap();
+                let mut tdrive = DRIVE.lock().unwrap();
+                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 32) |
+                                ((tram[reg.ptr + reg.pc + 1] as u64) << 24) |
+                                ((tram[reg.ptr + reg.pc + 2] as u64) << 16) |
+                                ((tram[reg.ptr + reg.pc + 3] as u64) << 8) |
+                                ((tram[reg.ptr + reg.pc + 4] as u64))) as usize;
+
+                DRIVE_FLAGS.lock().unwrap()[addr / 0x10_0000] = true;
+                
+                reg.pc += 5;
+                let register_index = tram[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let mut num: u8 = 0;
+
+                match register_index {
+                    0x00 => {num = reg.ax as u8;}
+                    0x01 => {num = reg.bx as u8;}
+                    0x02 => {num = reg.cx as u8;}
+                    0x03 => {num = reg.dx as u8;}
+
+                    0x04 => {num = reg.ay as u8;}
+                    0x05 => {num = reg.by as u8;}
+                    0x06 => {num = reg.cy as u8;}
+                    0x07 => {num = reg.dy as u8;}
+
+                    0x08 => {num = reg.ar as u8;}
+                    0x09 => {num = reg.br as u8;}
+                    0x0A => {num = reg.cr as u8;}
+                    0x0B => {num = reg.dr as u8;}
+                    _ => {}
+                }
+                tdrive[addr] = num;
+            }
+            0x29 => { // SBDR: 1b reg, 1b addr, 1b reg
+                //println!("BDR");
+                let register_index = RAM.lock().unwrap()[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let mut value = 0;
+
+                match register_index {
+                    0x00 => {value = reg.ax;}
+                    0x01 => {value = reg.bx;}
+                    0x02 => {value = reg.cx as u32;}
+                    0x03 => {value = reg.dx as u32;}
+
+                    0x04 => {value = reg.ay;}
+                    0x05 => {value = reg.by;}
+                    0x06 => {value = reg.cy as u32;}
+                    0x07 => {value = reg.dy as u32;}
+
+                    0x08 => {value = reg.ar;}
+                    0x09 => {value = reg.br;}
+                    0x0A => {value = reg.cr;}
+                    0x0B => {value = reg.dr;}
+
+                    _ => {}
+                }
+
+                let tram = RAM.lock().unwrap();
+                let mut tdrive = DRIVE.lock().unwrap();
+                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 16) | (value as u64)) as usize;
+
+                DRIVE_FLAGS.lock().unwrap()[addr / 0x10_0000] = true;
+
+                reg.pc += 1;
+                let register_index = tram[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let mut num: u8 = 0;
+
+                match register_index {
+                    0x00 => {num = reg.ax as u8;}
+                    0x01 => {num = reg.bx as u8;}
+                    0x02 => {num = reg.cx as u8;}
+                    0x03 => {num = reg.dx as u8;}
+
+                    0x04 => {num = reg.ay as u8;}
+                    0x05 => {num = reg.by as u8;}
+                    0x06 => {num = reg.cy as u8;}
+                    0x07 => {num = reg.dy as u8;}
+
+                    0x08 => {num = reg.ar as u8;}
+                    0x09 => {num = reg.br as u8;}
+                    0x0A => {num = reg.cr as u8;}
+                    0x0B => {num = reg.dr as u8;}
+                    _ => {}
+                }
+                tdrive[addr] = num;
+            }
+            0x2A => { // LDB: 5b addr, 1b reg
+                //println!("LDB");
+                let tram = RAM.lock().unwrap();
+                let tdrive = DRIVE.lock().unwrap();
+                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 32) | 
+                                ((tram[reg.ptr + reg.pc + 1] as u64) << 24) | 
+                                ((tram[reg.ptr + reg.pc + 2] as u64) << 16) | 
+                                ((tram[reg.ptr + reg.pc + 3] as u64) << 8) | 
+                                ((tram[reg.ptr + reg.pc + 4] as u64))) as usize;
+
+                DRIVE_FLAGS.lock().unwrap()[addr / 0x10_0000] = true;
+
+                reg.pc += 5;
+                let register_index = tram[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let number = tdrive[addr] as u32;
+
+                match register_index {
+                    0x00 => {reg.ax = number;}
+                    0x01 => {reg.bx = number;}
+                    0x02 => {reg.cx = number as u16;}
+                    0x03 => {reg.dx = number as u16;}
+
+                    0x04 => {reg.ay = number;}
+                    0x05 => {reg.by = number;}
+                    0x06 => {reg.cy = number as u16;}
+                    0x07 => {reg.dy = number as u16;}
+
+                    0x08 => {reg.ar = number;}
+                    0x09 => {reg.br = number;}
+                    0x0A => {reg.cr = number;}
+                    0x0B => {reg.dr = number;}
+
+                    _ => {}
+                }
+            }
+            0x2B => { // LDBR: 1b reg, 1b addr, 1b reg
+                //println!("LBDR");
+                let register_index = RAM.lock().unwrap()[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let mut value = 0;
+
+                match register_index {
+                    0x00 => {value = reg.ax;}
+                    0x01 => {value = reg.bx;}
+                    0x02 => {value = reg.cx as u32;}
+                    0x03 => {value = reg.dx as u32;}
+
+                    0x04 => {value = reg.ay;}
+                    0x05 => {value = reg.by;}
+                    0x06 => {value = reg.cy as u32;}
+                    0x07 => {value = reg.dy as u32;}
+
+                    0x08 => {value = reg.ar;}
+                    0x09 => {value = reg.br;}
+                    0x0A => {value = reg.cr;}
+                    0x0B => {value = reg.dr;}
+
+                    _ => {}
+                }
+
+                let tram = RAM.lock().unwrap();
+                let tdrive = DRIVE.lock().unwrap();
+                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 16) | (value as u64)) as usize;
+
+                DRIVE_FLAGS.lock().unwrap()[addr / 0x10_0000] = true;
+
+                reg.pc += 1;
+                let register_index = tram[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let number = tdrive[addr] as u32;
+
+                match register_index {
+                    0x00 => {reg.ax = number;}
+                    0x01 => {reg.bx = number;}
+                    0x02 => {reg.cx = number as u16;}
+                    0x03 => {reg.dx = number as u16;}
+
+                    0x04 => {reg.ay = number;}
+                    0x05 => {reg.by = number;}
+                    0x06 => {reg.cy = number as u16;}
+                    0x07 => {reg.dy = number as u16;}
+
+                    0x08 => {reg.ar = number;}
+                    0x09 => {reg.br = number;}
+                    0x0A => {reg.cr = number;}
+                    0x0B => {reg.dr = number;}
+
+                    _ => {}
+                }
+            }
+            0x2C => { // JCID: 5b addr
+                //println!("JCID");
+                let tram = RAM.lock().unwrap();
+                let addr = ((tram[reg.ptr + reg.pc] as usize) << 32) | ((tram[reg.ptr + reg.pc + 1] as usize) << 24) | ((tram[reg.ptr + reg.pc + 2] as usize) << 16) | ((tram[reg.ptr + reg.pc + 3] as usize) << 8) | ((tram[reg.ptr + reg.pc + 4] as usize));
+                reg.pc += 5;
+                if reg.cr == core_id {
+                    reg.pc = addr;
+                }
+            }
+            0x2D => { // JNCI: 5b addr
+                //println!("JNCI");
+                let tram = RAM.lock().unwrap();
+                let addr = ((tram[reg.ptr + reg.pc] as usize) << 32) | ((tram[reg.ptr + reg.pc + 1] as usize) << 24) | ((tram[reg.ptr + reg.pc + 2] as usize) << 16) | ((tram[reg.ptr + reg.pc + 3] as usize) << 8) | ((tram[reg.ptr + reg.pc + 4] as usize));
+                reg.pc += 5;
+                if reg.cr != core_id {
+                    reg.pc = addr;
+                }
+            }
+            0x2E => { // LDCD: 5b addr, 1b reg
+                //println!("LDCD");
+                let tram = RAM.lock().unwrap();
+                let tdrive = CD_DRIVE.lock().unwrap();
+                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 32) | 
+                                ((tram[reg.ptr + reg.pc + 1] as u64) << 24) | 
+                                ((tram[reg.ptr + reg.pc + 2] as u64) << 16) | 
+                                ((tram[reg.ptr + reg.pc + 3] as u64) << 8) | 
+                                ((tram[reg.ptr + reg.pc + 4] as u64))) as usize;
+                reg.pc += 5;
+                let register_index = tram[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let number32 = ((tdrive[addr] as u32) << 24) | ((tdrive[addr + 1] as u32) << 16) | ((tdrive[addr + 2] as u32) << 8) | (tdrive[addr + 3] as u32);
+                let number16 = ((tdrive[addr] as u16) << 8) | (tdrive[addr + 1] as u16);
+
+                match register_index {
+                    0x00 => {reg.ax = number32;}
+                    0x01 => {reg.bx = number32;}
+                    0x02 => {reg.cx = number16;}
+                    0x03 => {reg.dx = number16;}
+
+                    0x04 => {reg.ay = number32;}
+                    0x05 => {reg.by = number32;}
+                    0x06 => {reg.cy = number16;}
+                    0x07 => {reg.dy = number16;}
+
+                    0x08 => {reg.ar = number32;}
+                    0x09 => {reg.br = number32;}
+                    0x0A => {reg.cr = number32;}
+                    0x0B => {reg.dr = number32;}
+
+                    _ => {}
+                }
+            }
+            0x2F => { // STCD: 5b addr, 1b reg
+                //println!("STCD");
+                let tram = RAM.lock().unwrap();
+                let mut tdrive = CD_DRIVE.lock().unwrap();
+                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 32) |
+                                ((tram[reg.ptr + reg.pc + 1] as u64) << 24) |
+                                ((tram[reg.ptr + reg.pc + 2] as u64) << 16) |
+                                ((tram[reg.ptr + reg.pc + 3] as u64) << 8) |
+                                ((tram[reg.ptr + reg.pc + 4] as u64))) as usize;
+                reg.pc += 5;
+                let register_index = tram[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let mut num32= None;
+                let mut num16 = 0;
+
+                match register_index {
+                    0x00 => {num32 = Some(reg.ax);}
+                    0x01 => {num32 = Some(reg.bx);}
+                    0x02 => {num16 = reg.cx;}
+                    0x03 => {num16 = reg.dx;}
+
+                    0x04 => {num32 = Some(reg.ay);}
+                    0x05 => {num32 = Some(reg.by);}
+                    0x06 => {num16 = reg.cy;}
+                    0x07 => {num16 = reg.dy;}
+
+                    0x08 => {num32 = Some(reg.ar);}
+                    0x09 => {num32 = Some(reg.br);}
+                    0x0A => {num32 = Some(reg.cr);}
+                    0x0B => {num32 = Some(reg.dr);}
+                    _ => {}
+                }
+
+                if num32 != None {
+                    let num32 = num32.unwrap();
+                    tdrive[addr] = (num32 >> 24) as u8;
+                    tdrive[addr + 1] = (num32 >> 16) as u8;
+                    tdrive[addr + 2] = (num32 >> 8) as u8;
+                    tdrive[addr + 3] = num32 as u8;
+                }
+                else {
+                    tdrive[addr] = (num16 >> 8) as u8;
+                    tdrive[addr + 1] = num16 as u8;
+                }
+            }
+            0x30 => { // LCDR: 1b reg, 1b addr, 1b reg
+                //println!("LCDR");
+                let register_index = RAM.lock().unwrap()[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let mut value = 0;
+
+                match register_index {
+                    0x00 => {value = reg.ax;}
+                    0x01 => {value = reg.bx;}
+                    0x02 => {value = reg.cx as u32;}
+                    0x03 => {value = reg.dx as u32;}
+
+                    0x04 => {value = reg.ay;}
+                    0x05 => {value = reg.by;}
+                    0x06 => {value = reg.cy as u32;}
+                    0x07 => {value = reg.dy as u32;}
+
+                    0x08 => {value = reg.ar;}
+                    0x09 => {value = reg.br;}
+                    0x0A => {value = reg.cr;}
+                    0x0B => {value = reg.dr;}
+
+                    _ => {}
+                }
+
+                let tram = RAM.lock().unwrap();
+                let tdrive = CD_DRIVE.lock().unwrap();
+                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 16) | (value as u64)) as usize;
+                reg.pc += 1;
+                let register_index = tram[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let number32 = ((tdrive[addr] as u32) << 24) | ((tdrive[addr + 1] as u32) << 16) | ((tdrive[addr + 2] as u32) << 8) | (tdrive[addr + 3] as u32);
+                let number16 = ((tdrive[addr] as u16) << 8) | (tdrive[addr + 1] as u16);
+
+                match register_index {
+                    0x00 => {reg.ax = number32;}
+                    0x01 => {reg.bx = number32;}
+                    0x02 => {reg.cx = number16;}
+                    0x03 => {reg.dx = number16;}
+
+                    0x04 => {reg.ay = number32;}
+                    0x05 => {reg.by = number32;}
+                    0x06 => {reg.cy = number16;}
+                    0x07 => {reg.dy = number16;}
+
+                    0x08 => {reg.ar = number32;}
+                    0x09 => {reg.br = number32;}
+                    0x0A => {reg.cr = number32;}
+                    0x0B => {reg.dr = number32;}
+
+                    _ => {}
+                }
+            }
+            0x31 => { // SCDR: 1b reg, 1b addr, 1b reg
+                //println!("SCDR");
+                let register_index = RAM.lock().unwrap()[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let mut value = 0;
+
+                match register_index {
+                    0x00 => {value = reg.ax;}
+                    0x01 => {value = reg.bx;}
+                    0x02 => {value = reg.cx as u32;}
+                    0x03 => {value = reg.dx as u32;}
+
+                    0x04 => {value = reg.ay;}
+                    0x05 => {value = reg.by;}
+                    0x06 => {value = reg.cy as u32;}
+                    0x07 => {value = reg.dy as u32;}
+
+                    0x08 => {value = reg.ar;}
+                    0x09 => {value = reg.br;}
+                    0x0A => {value = reg.cr;}
+                    0x0B => {value = reg.dr;}
+
+                    _ => {}
+                }
+
+                let tram = RAM.lock().unwrap();
+                let mut tdrive = CD_DRIVE.lock().unwrap();
+                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 16) | (value as u64)) as usize;
+                reg.pc += 1;
+                let register_index = tram[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let mut num32= None;
+                let mut num16 = 0;
+
+                match register_index {
+                    0x00 => {num32 = Some(reg.ax);}
+                    0x01 => {num32 = Some(reg.bx);}
+                    0x02 => {num16 = reg.cx;}
+                    0x03 => {num16 = reg.dx;}
+
+                    0x04 => {num32 = Some(reg.ay);}
+                    0x05 => {num32 = Some(reg.by);}
+                    0x06 => {num16 = reg.cy;}
+                    0x07 => {num16 = reg.dy;}
+
+                    0x08 => {num32 = Some(reg.ar);}
+                    0x09 => {num32 = Some(reg.br);}
+                    0x0A => {num32 = Some(reg.cr);}
+                    0x0B => {num32 = Some(reg.dr);}
+                    _ => {}
+                }
+
+                if num32 != None {
+                    let num32 = num32.unwrap();
+                    tdrive[addr] = (num32 >> 24) as u8;
+                    tdrive[addr + 1] = (num32 >> 16) as u8;
+                    tdrive[addr + 2] = (num32 >> 8) as u8;
+                    tdrive[addr + 3] = num32 as u8;
+                }
+                else {
+                    tdrive[addr] = (num16 >> 8) as u8;
+                    tdrive[addr + 1] = num16 as u8;
+                }
+            }
+            0x32 => { // SBCD: 5b addr, 1b reg
+                //println!("SBCD");
+                let tram = RAM.lock().unwrap();
+                let mut tdrive = CD_DRIVE.lock().unwrap();
+                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 32) |
+                                ((tram[reg.ptr + reg.pc + 1] as u64) << 24) |
+                                ((tram[reg.ptr + reg.pc + 2] as u64) << 16) |
+                                ((tram[reg.ptr + reg.pc + 3] as u64) << 8) |
+                                ((tram[reg.ptr + reg.pc + 4] as u64))) as usize;
+                reg.pc += 5;
+                let register_index = tram[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let mut num: u8 = 0;
+
+                match register_index {
+                    0x00 => {num = reg.ax as u8;}
+                    0x01 => {num = reg.bx as u8;}
+                    0x02 => {num = reg.cx as u8;}
+                    0x03 => {num = reg.dx as u8;}
+
+                    0x04 => {num = reg.ay as u8;}
+                    0x05 => {num = reg.by as u8;}
+                    0x06 => {num = reg.cy as u8;}
+                    0x07 => {num = reg.dy as u8;}
+
+                    0x08 => {num = reg.ar as u8;}
+                    0x09 => {num = reg.br as u8;}
+                    0x0A => {num = reg.cr as u8;}
+                    0x0B => {num = reg.dr as u8;}
+                    _ => {}
+                }
+                tdrive[addr] = num;
+            }
+            0x33 => { // SBCDR: 1b reg, 1b addr, 1b reg
+                //println!("SBCDR");
+                let register_index = RAM.lock().unwrap()[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let mut value = 0;
+
+                match register_index {
+                    0x00 => {value = reg.ax;}
+                    0x01 => {value = reg.bx;}
+                    0x02 => {value = reg.cx as u32;}
+                    0x03 => {value = reg.dx as u32;}
+
+                    0x04 => {value = reg.ay;}
+                    0x05 => {value = reg.by;}
+                    0x06 => {value = reg.cy as u32;}
+                    0x07 => {value = reg.dy as u32;}
+
+                    0x08 => {value = reg.ar;}
+                    0x09 => {value = reg.br;}
+                    0x0A => {value = reg.cr;}
+                    0x0B => {value = reg.dr;}
+
+                    _ => {}
+                }
+
+                let tram = RAM.lock().unwrap();
+                let mut tdrive = CD_DRIVE.lock().unwrap();
+                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 16) | (value as u64)) as usize;
+                reg.pc += 1;
+                let register_index = tram[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let mut num: u8 = 0;
+
+                match register_index {
+                    0x00 => {num = reg.ax as u8;}
+                    0x01 => {num = reg.bx as u8;}
+                    0x02 => {num = reg.cx as u8;}
+                    0x03 => {num = reg.dx as u8;}
+
+                    0x04 => {num = reg.ay as u8;}
+                    0x05 => {num = reg.by as u8;}
+                    0x06 => {num = reg.cy as u8;}
+                    0x07 => {num = reg.dy as u8;}
+
+                    0x08 => {num = reg.ar as u8;}
+                    0x09 => {num = reg.br as u8;}
+                    0x0A => {num = reg.cr as u8;}
+                    0x0B => {num = reg.dr as u8;}
+                    _ => {}
+                }
+                tdrive[addr] = num;
+            }
+            0x34 => { // LCDB: 5b addr, 1b reg
+                //println!("LCDB");
+                let tram = RAM.lock().unwrap();
+                let tdrive = CD_DRIVE.lock().unwrap();
+                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 32) | 
+                                ((tram[reg.ptr + reg.pc + 1] as u64) << 24) | 
+                                ((tram[reg.ptr + reg.pc + 2] as u64) << 16) | 
+                                ((tram[reg.ptr + reg.pc + 3] as u64) << 8) | 
+                                ((tram[reg.ptr + reg.pc + 4] as u64))) as usize;
+                reg.pc += 5;
+                let register_index = tram[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let number = tdrive[addr] as u32;
+
+                match register_index {
+                    0x00 => {reg.ax = number;}
+                    0x01 => {reg.bx = number;}
+                    0x02 => {reg.cx = number as u16;}
+                    0x03 => {reg.dx = number as u16;}
+
+                    0x04 => {reg.ay = number;}
+                    0x05 => {reg.by = number;}
+                    0x06 => {reg.cy = number as u16;}
+                    0x07 => {reg.dy = number as u16;}
+
+                    0x08 => {reg.ar = number;}
+                    0x09 => {reg.br = number;}
+                    0x0A => {reg.cr = number;}
+                    0x0B => {reg.dr = number;}
+
+                    _ => {}
+                }
+            }
+            0x35 => { // LCDBR: 1b reg, 1b addr, 1b reg
+                //println!("LBCDR");
+                let register_index = RAM.lock().unwrap()[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let mut value = 0;
+
+                match register_index {
+                    0x00 => {value = reg.ax;}
+                    0x01 => {value = reg.bx;}
+                    0x02 => {value = reg.cx as u32;}
+                    0x03 => {value = reg.dx as u32;}
+
+                    0x04 => {value = reg.ay;}
+                    0x05 => {value = reg.by;}
+                    0x06 => {value = reg.cy as u32;}
+                    0x07 => {value = reg.dy as u32;}
+
+                    0x08 => {value = reg.ar;}
+                    0x09 => {value = reg.br;}
+                    0x0A => {value = reg.cr;}
+                    0x0B => {value = reg.dr;}
+
+                    _ => {}
+                }
+
+                let tram = RAM.lock().unwrap();
+                let tdrive = CD_DRIVE.lock().unwrap();
+                let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 16) | (value as u64)) as usize;
+                reg.pc += 1;
+                let register_index = tram[reg.ptr + reg.pc];
+                reg.pc += 1;
+
+                let number = tdrive[addr] as u32;
+
+                match register_index {
+                    0x00 => {reg.ax = number;}
+                    0x01 => {reg.bx = number;}
+                    0x02 => {reg.cx = number as u16;}
+                    0x03 => {reg.dx = number as u16;}
+
+                    0x04 => {reg.ay = number;}
+                    0x05 => {reg.by = number;}
+                    0x06 => {reg.cy = number as u16;}
+                    0x07 => {reg.dy = number as u16;}
+
+                    0x08 => {reg.ar = number;}
+                    0x09 => {reg.br = number;}
+                    0x0A => {reg.cr = number;}
+                    0x0B => {reg.dr = number;}
+
+                    _ => {}
+                }
+            }
 
             _ => {}
         }
+    }
+}
+
+fn saver() {
+    loop {
+        let data = DRIVE.lock().unwrap().clone();
+        let data: Vec<Vec<u8>> = data.chunks(0x10_0000).map(|s| s.into()).collect();
+
+        let flags = DRIVE_FLAGS.lock().unwrap().clone();
+
+        let mut f = 0;
+        for flag in flags {
+            if flag {
+                DRIVE_FLAGS.lock().unwrap()[f] = false;
+
+                //fs::write(format!("DRIVE/{}.BIN", f), data[f].clone()).expect("Unable to write to drive file");
+            }
+
+            f += 1;
+        }
+        thread::sleep(time::Duration::from_millis(30000));
     }
 }
