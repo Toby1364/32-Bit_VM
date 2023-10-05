@@ -107,24 +107,48 @@ async fn main() {
         CD_DRIVE.lock().unwrap()[0x00_0000 + i] = cd[i];
     }
 
-    /*for i in 0..100 {
-        let drive = fs::read(format!("DRIVE/{}.BIN", i)).unwrap();
-        for j in 0..drive.len() {
-            DRIVE.lock().unwrap()[(0x10_0000 * i) + j] = drive[i];
+    for i in 0..100 {
+        if fs::read(format!("DRIVE/{}.BIN", i)).is_ok() {
+            let drive = fs::read(format!("DRIVE/{}.BIN", i)).unwrap();
+            for j in 0..drive.len() {
+                DRIVE.lock().unwrap()[(0x10_0000 * i) + j] = drive[j];
+            }
         }
-    }*/
+    }
+
+    DRIVE.lock().unwrap()[0x000_7fff] = 0x43;
+    DRIVE.lock().unwrap()[0x000_8000] = 0x61;
+    DRIVE.lock().unwrap()[0x000_8001] = 0x6c;
+    DRIVE.lock().unwrap()[0x000_8002] = 0x63;
+    DRIVE.lock().unwrap()[0x000_8003] = 0x75;
+    DRIVE.lock().unwrap()[0x000_8004] = 0x6c;
+    DRIVE.lock().unwrap()[0x000_8005] = 0x61;
+    DRIVE.lock().unwrap()[0x000_8006] = 0x74;
+    DRIVE.lock().unwrap()[0x000_8007] = 0x6f;
+    DRIVE.lock().unwrap()[0x000_8008] = 0x72;
 
     thread::spawn(move || {
         saver();
     });
 
-    /*thread::spawn(move || {
+    thread::spawn(move || {
         core(0x00_00FF, 0x70_0000, 0);
+    });
+    /*thread::spawn(move || {
+        core(0x00_00FF, 0x70_0000, 1);
+    });
+    thread::spawn(move || {
+        core(0x00_00FF, 0x70_0000, 2);
+    });
+    thread::spawn(move || {
+        core(0x00_00FF, 0x70_0000, 3);
     });*/
 
     let fonts = [
         load_ttf_font_from_bytes(include_bytes!("../fonts/Perfect_DOS_VGA_437_Win.ttf")).unwrap()
     ];
+
+    show_mouse(false);
 
     while RAM.lock().unwrap()[0x00_0000] != 0x01 {
         {
@@ -134,15 +158,34 @@ async fn main() {
 
             tram[0x00_0004] = (screen_height() as u16 >> 8) as u8;
             tram[0x00_0005] = screen_height() as u16 as u8;
+
+            let char = get_char_pressed();
+            if char.is_some() {
+                tram[0x00_0006] = char.unwrap() as u8;
+            }
+            else if is_key_pressed(KeyCode::Up) {tram[0x00_0006] = 0x80;}
+            else if is_key_pressed(KeyCode::Down) {tram[0x00_0006] = 0x81;}
+            else if is_key_pressed(KeyCode::Left) {tram[0x00_0006] = 0x82;}
+            else if is_key_pressed(KeyCode::Right) {tram[0x00_0006] = 0x83;}
+            else if is_mouse_button_pressed(MouseButton::Left) {tram[0x00_0006] = 0x84;}
+            else if is_mouse_button_pressed(MouseButton::Right) {tram[0x00_0006] = 0x85;}
+            
+            tram[0x00_0007] = (mouse_position().0 as u16 >> 8) as u8;
+            tram[0x00_0008] = mouse_position().0 as u16 as u8;
+
+            tram[0x00_0009] = (mouse_position().1 as u16 >> 8) as u8;
+            tram[0x00_000A] = mouse_position().1 as u16 as u8;
         }
         next_frame().await;
         clear_background(BLACK);
 
         /*let mut x: Vec<u8> = Vec::new();
-        for i in 0..55 {
-            x.push(RAM.lock().unwrap()[0x0F_0000+i])
+        for i in 0..50 {
+            x.push(RAM.lock().unwrap()[0x02_0000+i])
         }
-        println!("{:?}", x);*/
+        println!("{:0x?}", x);*/
+
+        //println!("{:?}", CD_DRIVE.lock().unwrap()[0x00_0000]);
 
         if RAM.lock().unwrap()[0x00_0001] == 0x00 { //Basic Terminal
             let mut bytes: [[u8; 70]; 0x16] = [[0x0; 70]; 0x16];
@@ -208,11 +251,74 @@ async fn main() {
                 );
                 i += 12;
             }
+            i = 0;
+
+            while i < 0x0FFF {
+                let tram = RAM.lock().unwrap();
+                if tram[0x7F_9000 + i + 9] == 0 {i += 14; continue}
+                let x = (((tram[0x7F_9000 + i + 0] as u16) << 8) | (tram[0x7F_9000 + i + 1] as u16)) as f32;
+                let y = (((tram[0x7F_9000 + i + 2] as u16) << 8) | (tram[0x7F_9000 + i + 3] as u16)) as f32;
+
+                let mut addr = (((tram[0x7F_9000 + i + 10] as u64) << 24) | ((tram[0x7F_9000 + i + 11] as u64) << 16) | ((tram[0x7F_9000 + i + 12] as u64) << 8) | (tram[0x7F_9000 + i + 13] as u64)) as usize;
+
+                let mut text = String::new();
+                
+                while tram[addr] != 0x0 {
+                    text.push(tram[addr] as char);
+                    addr += 1;
+                }
+
+                draw_text_ex(
+                    &text,
+                    x,
+                    y,
+                    
+                    TextParams {
+                        font: fonts[tram[0x7F_9000 + i + 4] as usize],
+                        font_size: tram[0x7F_9000 + i + 5] as u16,
+                        color: Color::new(
+                            tram[0x7F_9000 + i + 6] as f32 / 255., 
+                            tram[0x7F_9000 + i + 7] as f32 / 255., 
+                            tram[0x7F_9000 + i + 8] as f32 / 255., 
+                            tram[0x7F_9000 + i + 9] as f32 / 255.,
+                        ),
+                        ..Default::default()
+                    },
+                );
+                i += 14;
+            }
+
+            i = 0;
+            while i < 0x9000 {
+                let tram = RAM.lock().unwrap();
+                if tram[0x7F_0000 + i + 12] == 0 {i += 13; continue}
+                let x1 = (((tram[0x7F_0000 + i + 0] as u16) << 8) | (tram[0x7F_0000 + i + 1] as u16)) as f32;
+                let y1 = (((tram[0x7F_0000 + i + 2] as u16) << 8) | (tram[0x7F_0000 + i + 3] as u16)) as f32;
+
+                let x2 = (((tram[0x7F_0000 + i + 4] as u16) << 8) | (tram[0x7F_0000 + i + 5] as u16)) as f32;
+                let y2 = (((tram[0x7F_0000 + i + 6] as u16) << 8) | (tram[0x7F_0000 + i + 7] as u16)) as f32;
+
+                draw_line(
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    tram[0x7F_0000 + i + 8] as f32,
+                    Color::new(
+                        tram[0x7F_0000 + i + 9] as f32 / 255.,
+                        tram[0x7F_0000 + i + 10] as f32 / 255.,
+                        tram[0x7F_0000 + i + 11] as f32 / 255.,
+                        tram[0x7F_0000 + i + 12] as f32 / 255.,
+                    ),
+                );
+                i += 13;
+            }
         }
         else if RAM.lock().unwrap()[0x00_0001] == 0x02 { //Monochrome Graphics
 
         }
     }
+    saver()
 }
 
 fn core(ptr: usize, stck_ptr: usize, core_id: u32) {
@@ -342,8 +448,8 @@ fn core(ptr: usize, stck_ptr: usize, core_id: u32) {
                     0x0A => {reg.cr = number32; reg.pc += 4;}
                     0x0B => {reg.dr = number32; reg.pc += 4;}
 
-                    0x0C => {reg.pc = number32 as usize; reg.pc += 4;}
-                    0x0D => {reg.ptr = number32 as usize; reg.pc += 4;}
+                    0x0C => {reg.pc = number32 as usize; reg.pc;}
+                    0x0D => {reg.ptr = number32 as usize; reg.pc;}
 
                     _ => {}
                 }
@@ -373,6 +479,7 @@ fn core(ptr: usize, stck_ptr: usize, core_id: u32) {
                     0xB => {n = reg.dr;}
 
                     0xC => {n = reg.pc as u32;}
+                    0xD => {n = reg.ptr as u32;}
 
                     _ => {}
                 }
@@ -394,6 +501,7 @@ fn core(ptr: usize, stck_ptr: usize, core_id: u32) {
                     0xB => {reg.dr = n;}
 
                     0xC => {reg.pc = n as usize;}
+                    0xD => {reg.ptr = n as usize;}
 
                     _ => {}
                 }
@@ -675,8 +783,8 @@ fn core(ptr: usize, stck_ptr: usize, core_id: u32) {
 
                     0x08 => {value = reg.ar;}
                     0x09 => {value = reg.br;}
-                    0x0A => {value = reg.cr as u32;}
-                    0x0B => {value = reg.dr as u32;}
+                    0x0A => {value = reg.cr;}
+                    0x0B => {value = reg.dr;}
 
                     0x0C => {value = reg.pc as u32;}
 
@@ -1100,8 +1208,6 @@ fn core(ptr: usize, stck_ptr: usize, core_id: u32) {
                                 ((tram[reg.ptr + reg.pc + 3] as u64) << 8) | 
                                 ((tram[reg.ptr + reg.pc + 4] as u64))) as usize;
 
-                DRIVE_FLAGS.lock().unwrap()[addr / 0x10_0000] = true;
-
                 reg.pc += 5;
                 let register_index = tram[reg.ptr + reg.pc];
                 reg.pc += 1;
@@ -1210,8 +1316,6 @@ fn core(ptr: usize, stck_ptr: usize, core_id: u32) {
                 let register_index = tram[reg.ptr + reg.pc];
                 reg.pc += 1;
 
-                DRIVE_FLAGS.lock().unwrap()[addr / 0x10_0000] = true;
-
                 let number32 = ((tdrive[addr] as u32) << 24) | ((tdrive[addr + 1] as u32) << 16) | ((tdrive[addr + 2] as u32) << 8) | (tdrive[addr + 3] as u32);
                 let number16 = ((tdrive[addr] as u16) << 8) | (tdrive[addr + 1] as u16);
 
@@ -1268,7 +1372,6 @@ fn core(ptr: usize, stck_ptr: usize, core_id: u32) {
                 reg.pc += 1;
 
                 DRIVE_FLAGS.lock().unwrap()[addr / 0x10_0000] = true;
-
 
                 let mut num32= None;
                 let mut num16 = 0;
@@ -1407,8 +1510,6 @@ fn core(ptr: usize, stck_ptr: usize, core_id: u32) {
                                 ((tram[reg.ptr + reg.pc + 3] as u64) << 8) | 
                                 ((tram[reg.ptr + reg.pc + 4] as u64))) as usize;
 
-                DRIVE_FLAGS.lock().unwrap()[addr / 0x10_0000] = true;
-
                 reg.pc += 5;
                 let register_index = tram[reg.ptr + reg.pc];
                 reg.pc += 1;
@@ -1463,8 +1564,6 @@ fn core(ptr: usize, stck_ptr: usize, core_id: u32) {
                 let tram = RAM.lock().unwrap();
                 let tdrive = DRIVE.lock().unwrap();
                 let addr: usize = (((tram[reg.ptr + reg.pc] as u64) << 16) | (value as u64)) as usize;
-
-                DRIVE_FLAGS.lock().unwrap()[addr / 0x10_0000] = true;
 
                 reg.pc += 1;
                 let register_index = tram[reg.ptr + reg.pc];
@@ -1887,6 +1986,17 @@ fn core(ptr: usize, stck_ptr: usize, core_id: u32) {
                     _ => {}
                 }
             }
+            0x36 => { // PTRM: 4b n, 4b n
+                //println!("PTRM");
+                let tram = RAM.lock().unwrap();
+
+                let pc = ((tram[reg.ptr + reg.pc] as u32) << 24) | ((tram[reg.ptr + reg.pc + 1] as u32) << 16) | ((tram[reg.ptr + reg.pc + 2] as u32) << 8) | (tram[reg.ptr + reg.pc + 3] as u32);
+                reg.pc += 4;
+                let ptr = ((tram[reg.ptr + reg.pc] as u32) << 24) | ((tram[reg.ptr + reg.pc + 1] as u32) << 16) | ((tram[reg.ptr + reg.pc + 2] as u32) << 8) | (tram[reg.ptr + reg.pc + 3] as u32);
+
+                reg.pc = pc as usize;
+                reg.ptr = ptr as usize;
+            }
 
             _ => {}
         }
@@ -1895,8 +2005,7 @@ fn core(ptr: usize, stck_ptr: usize, core_id: u32) {
 
 fn saver() {
     loop {
-        let data = DRIVE.lock().unwrap().clone();
-        let data: Vec<Vec<u8>> = data.chunks(0x10_0000).map(|s| s.into()).collect();
+        let data: Vec<Vec<u8>> = DRIVE.lock().unwrap().chunks(0x10_0000).map(|s| s.into()).collect();
 
         let flags = DRIVE_FLAGS.lock().unwrap().clone();
 
@@ -1910,6 +2019,6 @@ fn saver() {
 
             f += 1;
         }
-        thread::sleep(time::Duration::from_millis(30000));
+        thread::sleep(time::Duration::from_millis(10_000));
     }
 }
